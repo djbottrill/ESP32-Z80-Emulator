@@ -1,0 +1,313 @@
+                        ; --------------------------------------
+                        ; zasm: assemble "init8250.asm"
+                        ; date: 2021-05-14 16:39:01
+                        ; --------------------------------------
+
+
+                        ;==================================================================================
+                        ; Contents of this file are copyright Grant Searle
+                        ;
+                        ; You have permission to use this for NON COMMERCIAL USE ONLY
+                        ; If you wish to use it elsewhere, please include an acknowledgement to myself.
+                        ;
+                        ; http://searle.hostei.com/grant/index.html
+                        ;
+                        ; eMail: home.micros01@btinternet.com
+                        ;
+                        ; If the above don't work, please perform an Internet search to see if I have
+                        ; updated the web page hosting service.
+                        ;
+                        ;==================================================================================
+                        
+                        ; Minimum 6850 ACIA interrupt driven serial I/O to run modified NASCOM Basic 4.7
+                        ; Full input buffering with incoming data hardware handshaking
+                        ; Handshake shows full before the buffer is totally filled to allow run-on from the sender
+                        
+003F:                   SER_BUFSIZE     .EQU     3FH
+0030:                   SER_FULLSIZE    .EQU     30H
+0005:                   SER_EMPTYSIZE   .EQU     5
+                        
+00D6:                   RTS_HIGH        .EQU     0D6H
+0096:                   RTS_LOW         .EQU     096H
+                        
+2000:                   serBuf          .EQU     $2000
+203F:                   serInPtr        .EQU     serBuf+SER_BUFSIZE
+2041:                   serRdPtr        .EQU     serInPtr+2
+2043:                   serBufUsed      .EQU     serRdPtr+2
+2044:                   basicStarted    .EQU     serBufUsed+1
+20ED:                   TEMPSTACK       .EQU     $20ED ; Top of BASIC line input buffer so is "free ram" when BASIC resets
+                        
+000D:                   CR              .EQU     0DH
+000A:                   LF              .EQU     0AH
+000C:                   CS              .EQU     0CH             ; Clear screen
+                        
+0000:                                   .ORG $0000
+                        ;------------------------------------------------------------------------------
+                        ; Reset
+                        
+0000: F3       [ 4]     RST00           DI                       ;Disable interrupts
+0001: C36800   [14]                     JP       INIT            ;Initialize Hardware and go
+                        
+                        ;------------------------------------------------------------------------------
+                        ; TX a character over RS232 
+                        
+0004: FFFFFFFF                          .ORG     0008H
+0008: C34700   [10]     RST08            JP      TXA
+                        
+                        ;------------------------------------------------------------------------------
+                        ; RX a character over RS232 Channel A [Console], hold here until char ready.
+                        
+000B: FFFFFFFF                          .ORG 0010H
+000F: FF                
+0010: C33D00   [10]     RST10            JP      RXA
+                        
+                        ;------------------------------------------------------------------------------
+                        ; Check serial status
+                        
+0013: FFFFFFFF                          .ORG 0018H
+0017: FF                
+0018: C35300   [10]     RST18            JP      CKINCHAR
+                        
+                        ;------------------------------------------------------------------------------
+                        ; RST 38 - INTERRUPT VECTOR [ for IM 1 ]
+                        
+001B: FFFFFFFF                          .ORG     0038H
+001F: FF...             
+0038: 1800     [12]     RST38            JR      serialInt       
+                        
+                        ;------------------------------------------------------------------------------
+003A:                   serialInt: 
+                        ;		     PUSH     AF
+                        ;                PUSH     HL
+                        
+                        ;                IN       A,($80)
+                        ;                AND      $01             ; Check if interupt due to read buffer full
+                        ;                JR       Z,rts0          ; if not, ignore
+                        ;
+                        ;                IN       A,($81)
+                        ;                PUSH     AF
+                        ;                LD       A,(serBufUsed)
+                        ;                CP       SER_BUFSIZE     ; If full then ignore
+                        ;                JR       NZ,notFull
+                        ;                POP      AF
+                        ;                JR       rts0
+                        ;
+                        ;notFull:        LD       HL,(serInPtr)
+                        ;                INC      HL
+                        ;                LD       A,L             ; Only need to check low byte becasuse buffer<256 bytes
+                        ;                CP       (serBuf+SER_BUFSIZE) 
+                        ;                JR       NZ, notWrap
+                        ;                LD       HL,serBuf
+                        ;notWrap:        LD       (serInPtr),HL
+                        ;                POP      AF
+                        ;                LD       (HL),A
+                        ;                LD       A,(serBufUsed)
+                        ;                INC      A
+                        ;                LD       (serBufUsed),A
+                        ;                CP       SER_FULLSIZE
+                        ;                JR       C,rts0
+                        ;                LD       A,RTS_HIGH
+                        ;                OUT      ($80),A
+                        ;rts0:           POP      HL
+                        ;                POP      AF
+003A: FB       [ 4]                     EI
+003B: ED4D     [18]                     RETI
+                        
+                        ;------------------------------------------------------------------------------
+                        ;RXA:
+                        ;waitForChar:    LD       A,(serBufUsed)
+                        ;                CP       $00
+                        ;                JR       Z, waitForChar
+                        ;                PUSH     HL
+                        ;                LD       HL,(serRdPtr)
+                        ;                INC      HL
+                        ;                LD       A,L             ; Only need to check low byte becasuse buffer<256 bytes
+                        ;                CP       (serBuf+SER_BUFSIZE) & $FF
+                        ;                JR       NZ, notRdWrap
+                        ;                LD       HL,serBuf
+                        ;notRdWrap:      DI
+                        ;                LD       (serRdPtr),HL
+                        ;                LD       A,(serBufUsed)
+                        ;                DEC      A
+                        ;                LD       (serBufUsed),A
+                        ;                CP       SER_EMPTYSIZE
+                        ;                JR       NC,rts1
+                        ;                LD       A,RTS_LOW
+                        ;                OUT      ($80),A
+                        ;rts1:
+                        ;                LD       A,(HL)
+                        ;                EI
+                        ;                POP      HL
+                        ;                RET                      ; Char ready in A
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+                        ;; Wait until UART has a byte, store it in A
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+003D:                   RXA:
+003D: DB85     [11]     		IN A, ($85)	; read LSR
+003F: CB47     [19]     		BIT 0, A			; bit 0 is Data Ready
+0041: CA3D00   [29|29]  		JP Z, RXA
+0044: DB80     [40]     		IN A, ($80)
+0046: C9       [50]     		RET
+                        
+                        
+                        ;------------------------------------------------------------------------------
+                        ;TXA:            PUSH     AF              ; Store character
+                        ;conout1:        IN       A,($80)         ; Status byte       
+                        ;                BIT      1,A             ; Set Zero flag if still transmitting character       
+                        ;                JR       Z,conout1       ; Loop until flag signals ready
+                        ;                POP      AF              ; Retrieve character
+                        ;                OUT      ($81),A         ; Output the character
+                        ;                RET
+                        
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+                        ;; Output the byte in A to UART, wait until transmitted
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+0047:                   TXA:
+0047: F5       [11]     		PUSH AF
+0048:                   conout1:	
+0048: DB85     [11]     		IN A, ($85)	; read LSR
+004A: CB77     [19]     		BIT 6, A	; bit 6 is transmitter empty
+004C: CA4800   [29|29]  		JP Z, conout1
+004F: F1       [39]     		POP AF
+0050: D380     [50]     		OUT ($80), A
+0052: C9       [60]     		RET
+                        
+                        
+                        ;------------------------------------------------------------------------------
+                        ;CKINCHAR        LD       A,(serBufUsed)
+                        ;                CP       $0
+                        ;                RET
+                        ;
+                        
+                        
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+                        ;; If UART has a byte, store it in A else return $FF
+                        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+0053:                   CKINCHAR:
+0053: DB85     [11]     		IN A, ($85)
+0055: CB47     [19]     		BIT 0, A			; bit 0 is set when data present
+0057: C25D00   [29|29]  		JP NZ, gotchar
+005A: 3E00     [36]     		LD A, $00
+005C: C9       [46]     		RET
+005D:                   gotchar:
+005D: DB80     [11]     		IN A, ($80)
+005F: C9       [21]     		RET
+                        
+                        
+0060: 7E       [ 7]     PRINT:          LD       A,(HL)          ; Get character
+0061: B7       [11]                     OR       A               ; Is it $00 ?
+0062: C8       [16|22]                  RET      Z               ; Then RETurn on terminator
+0063: CF       [27]                     RST      08H             ; Print it
+0064: 23       [33]                     INC      HL              ; Next Character
+0065: 18F9     [45]                     JR       PRINT           ; Continue until $00
+0067: C9       [55]                     RET
+                        
+                        ;------------------------------------------------------------------------------
+0068:                   INIT:
+0068: 21ED20   [10]                    LD        HL,TEMPSTACK    ; Temp stack
+006B: F9       [16]                    LD        SP,HL           ; Set up a temporary stack
+                        ;               LD        HL,serBuf
+                        ;               LD        (serInPtr),HL
+                        ;               LD        (serRdPtr),HL
+                        ;               XOR       A               ;0 to accumulator
+                        ;               LD        (serBufUsed),A
+                        ;               LD        A,RTS_LOW
+                        ;               OUT       ($80),A         ; Initialise ACIA
+                        ;               IM        1
+                        ;               EI
+006C: 21A500   [26]                    LD        HL,SIGNON1      ; Sign-on message
+006F: CD6000   [43]                    CALL      PRINT           ; Output string
+0072: 3A4420   [56]                    LD        A,(basicStarted); Check the BASIC STARTED flag
+0075: FE59     [63]                    CP        'Y'             ; to see if this is power-up
+0077: 2016     [70|75]                 JR        NZ,COLDSTART    ; If not BASIC started then always do cold start
+0079: 21C200   [80]                    LD        HL,SIGNON2      ; Cold/warm message
+007C: CD6000   [97]                    CALL      PRINT           ; Output string
+007F:                   CORW:
+007F: CD3D00   [17]                    CALL      RXA
+0082: E6DF     [24]                    AND       %11011111       ; lower to uppercase
+0084: FE43     [31]                    CP        'C'
+0086: 200F     [38|43]                 JR        NZ, CHECKWARM
+0088: CF       [49]                    RST       08H
+0089: 3E0D     [56]                    LD        A,$0D
+008B: CF       [67]                    RST       08H
+008C: 3E0A     [74]                    LD        A,$0A
+008E: CF       [85]                    RST       08H
+008F: 3E59     [ 7]     COLDSTART:     LD        A,'Y'           ; Set the BASIC STARTED flag
+0091: 324420   [20]                    LD        (basicStarted),A
+0094: C35001   [30]                    JP        $0150           ; Start BASIC COLD
+0097:                   CHECKWARM:
+0097: FE57     [ 7]                    CP        'W'
+0099: 20E4     [14|19]                 JR        NZ, CORW
+009B: CF       [25]                    RST       08H
+009C: 3E0D     [32]                    LD        A,$0D
+009E: CF       [43]                    RST       08H
+009F: 3E0A     [50]                    LD        A,$0A
+00A1: CF       [61]                    RST       08H
+00A2: C35301   [71]                    JP        $0153           ; Start BASIC WARM
+                                      
+00A5:                   SIGNON1:       ;.BYTE     CS
+00A5: 5A383020                         .BYTE     "Z80 BIOS by David Bottrill",CR,LF,0
+00A9: 42494F53          
+00AD: 20627920          
+00B1: 44617669          
+00B5: 6420426F          
+00B9: 74747269          
+00BD: 6C6C0D0A          
+00C1: 00                
+00C2: 0D0A              SIGNON2:       .BYTE     CR,LF
+00C4: 436F6C64                         .BYTE     "Cold or warm start (C or W)? ",0
+00C8: 206F7220          
+00CC: 7761726D          
+00D0: 20737461          
+00D4: 72742028          
+00D8: 43206F72          
+00DC: 2057293F          
+00E0: 2000              
+                                      
+                        .END
+
+
+; +++ segments +++
+
+#CODE          = $0000 =     0,  size = $00E2 =   226
+
+; +++ global symbols +++
+
+CHECKWARM     = $0097 =   151          init8250.asm:229
+CKINCHAR      = $0053 =    83          init8250.asm:177
+COLDSTART     = $008F =   143          init8250.asm:226
+CORW          = $007F =   127          init8250.asm:216
+CR            = $000D =    13          init8250.asm:34
+CS            = $000C =    12          init8250.asm:36 (unused)
+INIT          = $0068 =   104          init8250.asm:197
+LF            = $000A =    10          init8250.asm:35
+PRINT         = $0060 =    96          init8250.asm:188
+RST00         = $0000 =     0          init8250.asm:42 (unused)
+RST08         = $0008 =     8          init8250.asm:49 (unused)
+RST10         = $0010 =    16          init8250.asm:55 (unused)
+RST18         = $0018 =    24          init8250.asm:61 (unused)
+RST38         = $0038 =    56          init8250.asm:67 (unused)
+RTS_HIGH      = $00D6 =   214          init8250.asm:24 (unused)
+RTS_LOW       = $0096 =   150          init8250.asm:25 (unused)
+RXA           = $003D =    61          init8250.asm:136
+SER_BUFSIZE   = $003F =    63          init8250.asm:20
+SER_EMPTYSIZE = $0005 =     5          init8250.asm:22 (unused)
+SER_FULLSIZE  = $0030 =    48          init8250.asm:21 (unused)
+SIGNON1       = $00A5 =   165          init8250.asm:239
+SIGNON2       = $00C2 =   194          init8250.asm:241
+TEMPSTACK     = $20ED =  8429          init8250.asm:32
+TXA           = $0047 =    71          init8250.asm:156
+_end          = $00E2 =   226          init8250.asm:37 (unused)
+_size         = $00E2 =   226          init8250.asm:37 (unused)
+basicStarted  = $2044 =  8260          init8250.asm:31
+conout1       = $0048 =    72          init8250.asm:158
+gotchar       = $005D =    93          init8250.asm:183
+serBuf        = $2000 =  8192          init8250.asm:27
+serBufUsed    = $2043 =  8259          init8250.asm:30
+serInPtr      = $203F =  8255          init8250.asm:28
+serRdPtr      = $2041 =  8257          init8250.asm:29
+serialInt     = $003A =    58          init8250.asm:70
+
+
+total time: 0.0066 sec.
+no errors
