@@ -8,11 +8,11 @@ The ESP32 code is configured for a Lilygo TTGO-T2 board with integrated SD card 
 The emulator handles all the original 8080 derived Z80 instruction and also implement some of the additional Z80 opcodes enough to get the basis running although BBC Basic doesn't currently run, mbasic does however run.
 
 This version od CP/M can address 16 disks A - P of 8.4MB each each disk is held as a single file on the SD card in the /disks folder i.e. A.dsk, B.dsk...... P.dsk.
-I've only included one disk image bit this can be cloned format.com will erase any disk.
+I've only included one disk image bit this can be cloned; format.com will erase any disk.
 
 Additional CP'M utilities are provided:
 
-adfies.com  - Lists files in the current SD card directory, defaults to /downloads
+sdfies.com  - Lists files in the current SD card directory, defaults to /downloads
 sdpath.com - sets the SD card path, defaults to /downloads
 sdcopy.com - copies a file on the SD card to CP/M disk
 
