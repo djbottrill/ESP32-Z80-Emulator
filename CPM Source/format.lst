@@ -1,0 +1,223 @@
+;==================================================================================
+; 
+; Disk Formatter for the Shady Grove ESP80 Z80 SBC
+;
+; Contents of this file are copyright David Bottrill 2018
+;
+; You have permission to use this for NON COMMERCIAL USE ONLY
+; If you wish to use it elsewhere, please include an acknowledgement to myself.
+;
+; The ESP80 has 16 x 8MB Drives with no reserved tracks on drive A
+;
+;==================================================================================
+
+
+TPA		.EQU	100H
+REBOOT		.EQU	0H
+BDOS		.EQU	5H
+CONIO		.EQU	6
+CONINP		.EQU	1
+CONOUT		.EQU	2
+PSTRING		.EQU	9
+MAKEF		.EQU	22
+CLOSEF		.EQU	16
+WRITES		.EQU	21
+DELF		.EQU	19
+SETUSR		.EQU	32
+
+CR		.EQU	0DH
+LF		.EQU	0AH
+FF		.EQU	0CH		;form feed
+
+FCB		.EQU	05CH
+BUFF		.EQU	080H
+
+		.ORG TPA
+
+
+;====================================================================================
+
+		
+getdrv:		LD	DE,message1	;Print Welcome message
+		LD	C,PSTRING
+		CALL	BDOS
+
+getdrv1:	LD 	C,CONINP
+		CALL 	BDOS		;Get drive letter
+
+		XOR	A,20H		;Convert to upper case	
+		PUSH	AF		;Save it
+		SUB	a,41H		;Convert to number
+		LD	(drv),A		;Save it
+		CP	A,16
+		JR	C,yousure	;<16 so carry on
+
+		LD	DE,message1a	;Print drive message
+		LD	C,PSTRING
+		CALL	BDOS
+		JR	getdrv1		;try again
+			
+
+yousure:	LD	DE,message2	;Print "Are you sure" message
+		LD	C,PSTRING
+		CALL	BDOS
+		LD 	C,CONINP
+		CALL 	BDOS		;get Y or N
+
+		XOR	A,20H		;Convert to upper case
+		CP	A,'Y'
+		JR	NZ,FINISH2	;Not Y so quite
+
+		LD	DE,message3	;Print "Formatting" message
+		LD	C,PSTRING
+		CALL	BDOS
+		POP	AF
+ 		LD 	C,CONOUT
+		LD 	E,A
+		CALL	BDOS		;Print Drive Letter
+
+
+; There are 512 directory entries per disk, 4 DIR entries per sector
+; So 128 x 128 byte sectors are to be initialised
+; The drive uses 512 byte sectors, so 32 x 512 byte sectors per disk
+; require initialisation
+
+
+		LD 	DE,$0040  	;HL increment
+		LD 	HL,$0000  	;H = LBA2, L=LBA1, initialise for drive 0 (A:)
+		LD	A,0
+		LD	(secNo),A	;Staring Sector	LBA0
+		
+		LD	A,(drv)		;Get drive number
+		LD	B,A
+
+mulloop:	LD	A,0
+		CP	A,B
+		JR	Z,secloop	;If zero go write directory
+		ADD	HL,DE		;Add on drive offset
+		DEC	B
+		JR	mulloop
+
+secloop:
+		PUSH	HL
+		LD 	HL,dirData
+		ld	bc,$FF30
+		ld	A,L
+		out	(c),a
+		inc 	bc
+		ld	a,h
+		out	(c),a		;Send address to IO buffer for disk write
+		INC	BC
+		POP	HL
+
+		LD	A,(secNo)	
+		OUT 	(c),A		;Write LBA0
+		
+		inc	bc	
+		LD	A,L
+		OUT 	(C),A		;Write LBA1
+		
+		inc	bc
+		LD	A,H
+		OUT 	(C),A		;Write LBA2
+
+		ld	bc,$FF20
+		ld	a,$02		;Write command
+		out	(c),a		;Send Write command to ESP8266
+writewt:	in	a,(c)
+		cp	0
+		jr	nz,writewt	;Wait for command to complete
+
+		LD	A,(secNo)
+		INC	A
+		LD	(secNo),A
+		CP	$20
+		JR	NZ, secloop
+
+FINISH:
+		LD	DE,message4
+		LD	C,PSTRING
+		CALL	BDOS
+
+FINISH2:	
+		RET
+
+
+secNo		.db	0
+drv		.db	0
+
+
+message1	.TEXT "CP/M Disk Formatter for the ESP80 by D.Bottrill 2018"
+message1a	.DB CR,LF
+		.TEXT "Enter Drive Letter to format: $"
+		
+message2	.DB CR,LF
+		.TEXT "Are you sure you want to format Y/N $"
+
+message3	.DB CR,LF
+		.TEXT "Formatting Drive: $"
+
+message4	.DB CR,LF
+		.TEXT "Formatting complete"
+		.DB CR,LF
+		.TEXT "$"
+
+; Directory data for 1 x 128 byte sector
+dirData:
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+		.DB $E5,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$20,$00,$00,$00,$00
+		.DB $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+
+
+		.END
+	
+
+
+total time: 0.0032 sec.
+no errors

@@ -1,0 +1,65 @@
+              	; --------------------------------------
+              	; zasm: assemble "sdfiles.asm"
+              	; date: 2018-11-17 22:11:00
+              	; --------------------------------------
+
+
+              	;==================================================================================
+              	; Contents of this file are copyright David Bottrill
+              	; 
+              	;
+              	; You have permission to use this for NON COMMERCIAL USE ONLY
+              	; If you wish to use it elsewhere, please include an acknowledgement to myself.
+              	;
+              	;
+              	;==================================================================================
+              	
+0100:         	TPA		.EQU	100H
+0000:         	REBOOT		.EQU	0H
+0005:         	BDOS		.EQU	5H
+0006:         	CONIO		.EQU	6
+0001:         	CONINP		.EQU	1
+0002:         	CONOUT		.EQU	2
+0009:         	PSTRING		.EQU	9
+0016:         	MAKEF		.EQU	22
+0010:         	CLOSEF		.EQU	16
+0015:         	WRITES		.EQU	21
+0013:         	DELF		.EQU	19
+0020:         	SETUSR		.EQU	32
+              	
+000D:         	CR		.EQU	0DH
+000A:         	LF		.EQU	0AH
+              	
+005C:         	FCB		.EQU	05CH
+0080:         	BUFF		.EQU	080H
+              	
+              	;Virtual I/O Registers
+FF00:         	uart_a_tx	equ	$ff00
+FF10:         	uart_a_rx	equ	$ff10
+FF01:         	uart_b_tx	equ	$ff01
+FF11:         	uart_b_rx	equ	$ff11
+FF30:         	dparm		equ	$ff30
+FF20:         	dcmd		equ	$ff20
+              	
+              	
+0100:         			.ORG TPA
+              	
+              	
+              	
+              		
+              	
+              	;Call ESP8266 to list the /download directory on the SD Card
+              	
+0100: 0120FF  			ld	bc,dcmd
+0103: 3E06    			ld	a,6
+0105: ED79    			out	(c),a		;Send file open command
+0107: ED78    	lloop1a		in	a,(c)
+0109: 20FC    			jr	nz,lloop1a	;Wait for it to complete
+010B: C9      			ret
+              	
+              	
+              			.END
+
+
+total time: 0.0303 sec.
+no errors

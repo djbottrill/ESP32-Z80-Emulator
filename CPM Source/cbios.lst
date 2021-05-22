@@ -1,0 +1,1071 @@
+                        ; --------------------------------------
+                        ; zasm: assemble "cbios.asm"
+                        ; date: 2021-05-19 13:43:10
+                        ; --------------------------------------
+
+
+                        ;==================================================================================
+                        ; Contents of this file are copyright Grant Searle
+                        ; Blocking/unblocking routines are the published version by Digital Research
+                        ; (bugfixed, as found on the web)
+                        ;
+                        ; You have permission to use this for NON COMMERCIAL USE ONLY
+                        ; If you wish to use it elsewhere, please include an acknowledgement to myself.
+                        ;
+                        ; http://searle.hostei.com/grant/index.html
+                        ;
+                        ; eMail: home.micros01@btinternet.com
+                        ;
+                        ; If the above don't work, please perform an Internet search to see if I have
+                        ; updated the web page hosting service.
+                        ;
+                        ;==================================================================================
+                        
+D000:                   ccp		.EQU	0D000h		; Base of CCP.
+D806:                   bdos		.EQU	ccp + 0806h	; Base of BDOS.
+E600:                   bios		.EQU	ccp + 1600h	; Base of BIOS.
+                        
+                        ; Set CP/M low memory datA, vector and buffer addresses.
+                        
+0003:                   iobyte		.EQU	03h		; Intel standard I/O definition byte.
+0004:                   userdrv		.EQU	04h		; Current user number and drive.
+0080:                   tpabuf		.EQU	80h		; Default I/O buffer and command line storage.
+                        
+                        
+                        ;int38		.EQU	38H
+                        ;nmi		.EQU	66H
+                        
+1000:                   blksiz		.equ	4096		;CP/M allocation size
+0200:                   hstsiz		.equ	512		;host disk sector size
+0020:                   hstspt		.equ	32		;host disk sectors/trk
+0004:                   hstblk		.equ	hstsiz/128	;CP/M sects/host buff
+0080:                   cpmspt		.equ	hstblk * hstspt	;CP/M sectors/track
+0003:                   secmsk		.equ	hstblk-1	;sector mask
+                        					;compute sector mask
+                        ;secshf		.equ	2		;log2(hstblk)
+                        
+0000:                   wrall		.equ	0		;write to allocated
+0001:                   wrdir		.equ	1		;write to directory
+0002:                   wrual		.equ	2		;write to unallocated
+                        
+                        ;Virtual I/O Registers
+                        ;uart_a_tx	equ	$FF00
+                        ;uart_a_rx	equ	$FF10
+                        ;uart_b_tx	equ	$FF01
+                        ;uart_b_rx	equ	$FF11
+                        ;uart_b_tx	equ	$FF00
+                        ;uart_b_rx	equ	$FF10
+                        ;dparm		equ	$FF30
+                        ;dcmd		equ	$FF20
+                        
+0080:                   uart_a	equ	$80
+0085:                   uart_a_lsr	equ	$85
+0080:                   uart_b	equ	$80
+0085:                   uart_b_lsr	equ	$85
+0030:                   dparm		equ	$30
+0020:                   dcmd		equ	$20
+                        
+000A:                   LF		.EQU	0AH		;line feed
+000C:                   FF		.EQU	0CH		;form feed
+000D:                   CR		.EQU	0DH		;carriage RETurn
+                        
+                        ;================================================================================================
+                        
+E600:                   		.ORG	bios		; BIOS origin.
+                        
+                        ;================================================================================================
+                        ; BIOS jump table.
+                        ;================================================================================================
+E600: C342E7   [10]     		JP	boot		;  0 Initialize.
+E603: C3ACE7   [10]     wboote:		JP	wboot		;  1 Warm boot.
+E606: C3D8E7   [20]     		JP	const		;  2 Console status.
+E609: C316E8   [30]     		JP	conin		;  3 Console input.
+E60C: C353E8   [40]     		JP	conout		;  4 Console OUTput.
+E60F: C33BE8   [50]     		JP	list		;  5 List OUTput.
+E612: C347E8   [60]     		JP	punch		;  6 punch OUTput.
+E615: C309E8   [70]     		JP	reader		;  7 Reader input.
+E618: C3A8E8   [80]     		JP	home		;  8 Home disk.
+E61B: C380E8   [90]     		JP	seldsk		;  9 Select disk.
+E61E: C3B4E8   [100]    		JP	settrk		; 10 Select track.
+E621: C3B9E8   [110]    		JP	setsec		; 11 Select sector.
+E624: C3BEE8   [120]    		JP	setdma		; 12 Set DMA ADDress.
+E627: C3C6E8   [130]    		JP	read		; 13 Read 128 bytes.
+E62A: C3DAE8   [140]    		JP	write		; 14 Write 128 bytes.
+E62D: C37DE8   [150]    		JP	listst		; 15 List status.
+E630: C3C3E8   [160]    		JP	sectran		; 16 Sector translate.
+                        
+                        ;================================================================================================
+                        ; Disk parameter headers for disk 0 to 15
+                        ;================================================================================================
+E633:                   dpbase:
+E633: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv00
+E637: 00000000          
+E63B: B4EA33E7          
+E63F: 000034EB          
+E643: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv01
+E647: 00000000          
+E64B: B4EA33E7          
+E64F: 000035EC          
+E653: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv02
+E657: 00000000          
+E65B: B4EA33E7          
+E65F: 000036ED          
+E663: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv03
+E667: 00000000          
+E66B: B4EA33E7          
+E66F: 000037EE          
+E673: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv04
+E677: 00000000          
+E67B: B4EA33E7          
+E67F: 000038EF          
+E683: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv05
+E687: 00000000          
+E68B: B4EA33E7          
+E68F: 000039F0          
+E693: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv06
+E697: 00000000          
+E69B: B4EA33E7          
+E69F: 00003AF1          
+E6A3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv07
+E6A7: 00000000          
+E6AB: B4EA33E7          
+E6AF: 00003BF2          
+E6B3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv08
+E6B7: 00000000          
+E6BB: B4EA33E7          
+E6BF: 00003CF3          
+E6C3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv09
+E6C7: 00000000          
+E6CB: B4EA33E7          
+E6CF: 00003DF4          
+E6D3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv10
+E6D7: 00000000          
+E6DB: B4EA33E7          
+E6DF: 00003EF5          
+E6E3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv11
+E6E7: 00000000          
+E6EB: B4EA33E7          
+E6EF: 00003FF6          
+E6F3: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv12
+E6F7: 00000000          
+E6FB: B4EA33E7          
+E6FF: 000040F7          
+E703: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv13
+E707: 00000000          
+E70B: B4EA33E7          
+E70F: 000041F8          
+E713: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv14
+E717: 00000000          
+E71B: B4EA33E7          
+E71F: 000042F9          
+E723: 00000000          	 	.DW 0000h,0000h,0000h,0000h,dirbuf,dpb,0000h,alv15
+E727: 00000000          
+E72B: B4EA33E7          
+E72F: 000043FA          
+                        
+E733:                   dpb:
+E733: 8000              		.DW 128 ;SPT - sectors per track
+E735: 05                		.DB 5   ;BSH - block shift factor
+E736: 1F                		.DB 31  ;BLM - block mask
+E737: 01                		.DB 1   ;EXM - Extent mask
+E738: FF07              		.DW 2047 ;DSM - Storage size (blocks - 1)
+E73A: FF01              		.DW 511 ;DRM - Number of directory entries - 1
+E73C: F0                		.DB 240 ;AL0 - 1 bit set per directory block
+E73D: 00                		.DB 0   ;AL1 -            "
+E73E: 0000              		.DW 0   ;CKS - DIR check vector size (DRM+1)/4 (0=fixed disk)
+E740: 0000              		.DW 0   ;OFF - Reserved tracks
+                        
+                        
+                        ;================================================================================================
+                        ; Cold boot
+                        ;================================================================================================
+                        
+E742:                   boot:
+E742: F3       [ 4]     		DI				; Disable interrupts.
+E743: 3168FB   [14]     		LD	SP,biosstack		; Set default stack.
+                        
+                        
+E746: CDA0EA   [31]     		CALL	printInline
+E749: 0C                		.DB FF
+E74A: 5A383020          		.TEXT "Z80 CP/M BIOS 1.1 by D. Bottrill 2021"
+E74E: 43502F4D          
+E752: 2042494F          
+E756: 5320312E          
+E75A: 31206279          
+E75E: 20442E20          
+E762: 426F7474          
+E766: 72696C6C          
+E76A: 20323032          
+E76E: 31                
+E76F: 0D0A              		.DB CR,LF
+E771: 0D0A              		.DB CR,LF
+E773: 43502F4D          		.TEXT "CP/M 2.2 "
+E777: 20322E32          
+E77B: 20                
+E77C: 436F7079          		.TEXT	"Copyright"
+E780: 72696768          
+E784: 74                
+E785: 20313937          		.TEXT	" 1979 (c) by Digital Research"
+E789: 39202863          
+E78D: 29206279          
+E791: 20446967          
+E795: 6974616C          
+E799: 20526573          
+E79D: 65617263          
+E7A1: 68                
+E7A2: 0D0A00            		.DB CR,LF,0
+                        
+E7A5: AF       [35]     		XOR	a				; Clear I/O & drive bytes.
+E7A6: 320400   [48]     		LD	(userdrv),A
+                        
+E7A9: C3B0E7   [58]     		JP	gocpm
+                        
+                        ;================================================================================================
+                        ; Warm boot
+                        ;================================================================================================
+                        
+E7AC:                   wboot:
+E7AC: F3       [ 4]     		DI				; Disable interrupts.
+E7AD: 3168FB   [14]     		LD	SP,biosstack		; Set default stack.
+                        
+                        
+                        ;================================================================================================
+                        ; Common code for cold and warm boot
+                        ;================================================================================================
+                        
+E7B0:                   gocpm:
+E7B0: AF       [ 4]     		xor	a			;0 to accumulator
+E7B1: 3272FB   [17]     		ld	(hstact),a		;host buffer inactive
+E7B4: 3274FB   [30]     		ld	(unacnt),a		;clear unalloc count
+                        
+                        ;		LD	HL,serialInt		; ADDress of serial interrupt.
+                        ;		LD	($40),HL
+                        
+E7B7: 218000   [40]     		LD	HL,tpabuf		; ADDress of BIOS DMA buffer.
+E7BA: 227DFB   [56]     		LD	(dmaAddr),HL
+E7BD: 3EC3     [63]     		LD	A,0C3h			; Opcode for 'JP'.
+E7BF: 320000   [76]     		LD	(00h),A			; Load at start of RAM.
+E7C2: 2103E6   [86]     		LD	HL,wboote		; ADDress of jump for a warm boot.
+E7C5: 220100   [102]    		LD	(01h),HL
+E7C8: 320500   [115]    		LD	(05h),A			; Opcode for 'JP'.
+E7CB: 2106D8   [125]    		LD	HL,bdos			; ADDress of jump for the BDOS.
+E7CE: 220600   [141]    		LD	(06h),HL
+E7D1: 3A0400   [154]    		LD	A,(userdrv)		; Save new drive number (0).
+E7D4: 4F       [158]    		LD	c,A			; Pass drive number in C.
+                        
+                        ;		IM	2
+                        ;		EI				; Enable interrupts
+                        
+E7D5: C300D0   [168]    		JP	ccp			; Start CP/M by jumping to the CCP.
+                        
+                        ;================================================================================================
+                        ; Console I/O routines
+                        ;================================================================================================
+                        
+                        ;------------------------------------------------------------------------------------------------
+E7D8:                   const:
+E7D8: 3A0300   [13]     		LD	A,(iobyte)
+E7DB: E60B     [20]     		AND	00001011b ; Mask off console and high bit of reader
+E7DD: FE0A     [27]     		CP	00001010b ; redirected to reader on UR1/2 (Serial A)
+E7DF: 280A     [34|39]  		JR	Z,constA
+E7E1: FE02     [41]     		CP	00000010b ; redirected to reader on TTY/RDR (Serial B)
+E7E3: 2815     [48|53]  		JR	Z,constB
+                        
+E7E5: E603     [55]     		AND	$03 ; remove the reader from the mask - only console bits then remain
+E7E7: FE01     [62]     		CP	$01
+E7E9: 200F     [69|74]  		JR	NZ,constB
+E7EB:                   constA:
+E7EB: E5       [11]     		PUSH	HL
+E7EC: DB85     [22]     		IN	A,(uart_a_lsr)
+E7EE: CB47     [30]     		BIT 	0, A			; bit 0 is Data Ready
+E7F0: 2804     [37|42]  		JR	Z, dataAEmpty
+E7F2: 3EFF     [44]     		LD	A,0FFH
+E7F4: E1       [54]     		POP	HL
+E7F5: C9       [64]     		RET
+E7F6:                   dataAEmpty:
+E7F6: 3E00     [ 7]     		LD	A,0
+E7F8: E1       [17]     		POP	HL
+E7F9: C9       [27]             	RET
+                        
+                        
+E7FA:                   constB:
+E7FA: E5       [11]     		PUSH	HL
+E7FB: DB85     [22]     		IN	A,(uart_b_lsr)
+E7FD: CB47     [30]     		BIT 	0, A			; bit 0 is Data Ready
+E7FF: 2804     [37|42]  		JR	Z, dataBEmpty
+E801: 3EFF     [44]     		LD	A,0FFH
+E803: E1       [54]     		POP	HL
+E804: C9       [64]     		RET
+E805:                   dataBEmpty:
+E805: 3E00     [ 7]     		LD	A,0
+E807: E1       [17]     		POP	HL
+E808: C9       [27]             	RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E809:                   reader:		
+E809: E5       [11]     		PUSH	HL
+E80A: F5       [22]     		PUSH	AF
+E80B: 3A0300   [13]     reader2:	LD	A,(iobyte)
+E80E: E608     [20]     		AND	$08
+E810: FE08     [27]     		CP	$08
+E812: 201C     [34|39]  		JR	NZ,coninB
+E814: 180F     [46]     		JR	coninA
+                        ;------------------------------------------------------------------------------------------------
+E816:                   conin:
+E816: E5       [11]     		PUSH	HL
+E817: F5       [22]     		PUSH	AF
+E818: 3A0300   [35]     		LD	A,(iobyte)
+E81B: E603     [42]     		AND	$03
+E81D: FE02     [49]     		CP	$02
+E81F: 28EA     [56|61]  		JR	Z,reader2	; "BAT:" redirect
+E821: FE01     [63]     		CP	$01
+E823: 200B     [70|75]  		JR	NZ,coninB
+                        		
+E825:                   coninA:
+E825: F1       [10]     		POP	AF	
+E826:                   waitForCharA:	
+E826: DB85     [11]     		IN 	A, (uart_a_lsr)		
+E828: CB47     [19]     		BIT 	0, A			; bit 0 is Data Ready
+E82A: 28FA     [26|31]  		jr 	z, waitForCharA		
+E82C: DB80     [37]     		in 	a, (uart_a)		
+E82E: E1       [47]     		POP	HL
+E82F: C9       [57]     		RET			; Char ready in A
+                        
+                        
+E830:                   coninB:
+E830: F1       [10]     		POP	AF
+E831:                   waitForCharB:	
+E831: DB85     [11]     		IN 	A, (uart_b_lsr)		
+E833: CB47     [19]     		BIT 	0, A			; bit 0 is Data Ready
+E835: 28FA     [26|31]  		jr 	z, waitForCharB		
+E837: DB80     [37]     		in 	a, (uart_b)		
+E839: E1       [47]     		POP	HL
+E83A: C9       [57]     		RET			; Char ready in A
+                        
+                        ;------------------------------------------------------------------------------------------------
+E83B: F5       [11]     list:		PUSH	AF		; Store character
+E83C: 3A0300   [13]     list2:	LD	A,(iobyte)
+E83F: E6C0     [20]     		AND	$C0
+E841: FE40     [27]     		CP	$40
+E843: 202A     [34|39]  		JR	NZ,conoutB1
+E845: 181A     [46]     		JR	conoutA1
+                        
+                        ;------------------------------------------------------------------------------------------------
+E847: F5       [11]     punch:	PUSH	AF		; Store character
+E848: 3A0300   [24]     		LD	A,(iobyte)
+E84B: E620     [31]     		AND	$20
+E84D: FE20     [38]     		CP	$20
+E84F: 201E     [45|50]  		JR	NZ,conoutB1
+E851: 180E     [57]     		JR	conoutA1
+                        
+                        ;------------------------------------------------------------------------------------------------
+E853: F5       [11]     conout:	PUSH	AF		; Store character
+E854: 3A0300   [24]     		LD	A,(iobyte)
+E857: E603     [31]     		AND	$03
+E859: FE02     [38]     		CP	$02
+E85B: 28DF     [45|50]  		JR	Z,list2		; "BAT:" redirect
+E85D: FE01     [52]     		CP	$01
+E85F: 200E     [59|64]  		JR	NZ,conoutB1
+                        
+                        
+E861: 79       [ 4]     conoutA1:	LD	A,C
+E862: F5       [15]     		PUSH	AF
+E863:                   conoutA1_loop	
+E863: DB85     [11]     		IN	A, (uart_a_lsr)
+E865: CB77     [19]     		BIT 	6, A	; bit 6 is transmitter empty	
+E867: CA63E8   [29|29]  		JP 	Z, conoutA1_loop
+E86A: F1       [39]     		pop	af
+E86B: D380     [50]     		OUT	(uart_a),A
+E86D: F1       [60]     		POP	AF
+E86E: C9       [70]     		RET
+                        
+                        
+E86F: 79       [ 4]     conoutB1:	LD	A,C
+E870: F5       [15]     		PUSH	AF
+E871:                   conoutB1_loop	
+E871: DB85     [11]     		IN	A, (uart_b_lsr)
+E873: CB77     [19]     		BIT 	6, A	; bit 6 is transmitter empty	
+E875: CA71E8   [29|29]  		JP 	Z, conoutB1_loop
+E878: F1       [39]     		pop	af
+E879: D380     [50]     		OUT	(uart_b),A
+E87B: F1       [60]     		POP	AF
+E87C: C9       [70]     		RET
+                        
+                        
+                        
+                        ;------------------------------------------------------------------------------------------------
+E87D: 3EFF     [ 7]     listst:	LD	A,$FF		; Return list status of 0xFF (ready).
+E87F: C9       [17]     		RET
+                        
+                        ;================================================================================================
+                        ; Disk processing entry points
+                        ;================================================================================================
+                        
+E880:                   seldsk:
+E880: 210000   [10]     		LD	HL,$0000
+E883: 79       [14]     		LD	A,C
+E884: FE10     [21]     		CP	16		; 16 for 128MB disk, 8 for 64MB disk
+E886: 380D     [28|33]  		jr	C,chgdsk	; if invalid drive will give BDOS error
+E888: 3A0400   [41]     		LD	A,(userdrv)	; so set the drive back to a:
+E88B: B9       [45]     		CP	C		; If the default disk is not the same as the
+E88C: C0       [50|56]  		RET	NZ		; selected drive then return, 
+E88D: AF       [54]     		XOR	A		; else reset default back to a:
+E88E: 320400   [67]     		LD	(userdrv),A	; otherwise will be stuck in a loop
+E891: 3268FB   [80]     		LD	(sekdsk),A
+E894: C9       [90]     		ret
+                        
+E895: 3268FB   [13]     chgdsk:		LD 	(sekdsk),A
+E898: CB07     [21]     		RLC	a		;*2
+E89A: CB07     [29]     		RLC	a		;*4
+E89C: CB07     [37]     		RLC	a		;*8
+E89E: CB07     [45]     		RLC	a		;*16
+E8A0: 2133E6   [55]     		LD 	HL,dpbase
+E8A3: 0600     [62]     		LD	b,0
+E8A5: 4F       [66]     		LD	c,A	
+E8A6: 09       [77]     		ADD	HL,BC
+                        
+E8A7: C9       [87]     		RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8A8:                   home:
+E8A8: 3A73FB   [13]     		ld	a,(hstwrt)	;check for pending write
+E8AB: B7       [17]     		or	a
+E8AC: 2003     [24|29]  		jr	nz,homed
+E8AE: 3272FB   [37]     		ld	(hstact),a	;clear host active flag
+E8B1:                   homed:
+E8B1: 010000   [10]     		LD 	BC,0000h
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8B4: ED4369FB [20]     settrk:		LD 	(sektrk),BC	; Set track passed from BDOS in register BC.
+E8B8: C9       [30]     		RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8B9: ED436BFB [20]     setsec:		LD 	(seksec),BC	; Set sector passed from BDOS in register BC.
+E8BD: C9       [30]     		RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8BE: ED437DFB [20]     setdma:		LD 	(dmaAddr),BC	; Set DMA ADDress given by registers BC.
+E8C2: C9       [30]     		RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8C3: C5       [11]     sectran:	PUSH 	BC
+E8C4: E1       [21]     		POP 	HL
+E8C5: C9       [31]     		RET
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8C6:                   read:
+                        		;read the selected CP/M sector
+E8C6: AF       [ 4]     		xor	a
+E8C7: 3274FB   [17]     		ld	(unacnt),a
+E8CA: 3E01     [24]     		ld	a,1
+E8CC: 327BFB   [37]     		ld	(readop),a		;read operation
+E8CF: 327AFB   [50]     		ld	(rsflag),a		;must read data
+E8D2: 3E02     [57]     		ld	a,wrual
+E8D4: 327CFB   [70]     		ld	(wrtype),a		;treat as unalloc
+E8D7: C341E9   [80]     		jp	rwoper			;to perform the read
+                        
+                        
+                        ;------------------------------------------------------------------------------------------------
+E8DA:                   write:
+                        		;write the selected CP/M sector
+E8DA: AF       [ 4]     		xor	a		;0 to accumulator
+E8DB: 327BFB   [17]     		ld	(readop),a	;not a read operation
+E8DE: 79       [21]     		ld	a,c		;write type in c
+E8DF: 327CFB   [34]     		ld	(wrtype),a
+E8E2: FE02     [41]     		cp	wrual		;write unallocated?
+E8E4: 2017     [48|53]  		jr	nz,chkuna	;check for unalloc
+                        ;
+                        ;		write to unallocated, set parameters
+E8E6: 3E20     [55]     		ld	a,blksiz/128	;next unalloc recs
+E8E8: 3274FB   [68]     		ld	(unacnt),a
+E8EB: 3A68FB   [81]     		ld	a,(sekdsk)		;disk to seek
+E8EE: 3275FB   [94]     		ld	(unadsk),a		;unadsk = sekdsk
+E8F1: 2A69FB   [110]    		ld	hl,(sektrk)
+E8F4: 2276FB   [126]    		ld	(unatrk),hl		;unatrk = sectrk
+E8F7: 3A6BFB   [139]    		ld	a,(seksec)
+E8FA: 3278FB   [152]    		ld	(unasec),a		;unasec = seksec
+                        ;
+E8FD:                   chkuna:
+                        ;		check for write to unallocated sector
+E8FD: 3A74FB   [13]     		ld	a,(unacnt)		;any unalloc remain?
+E900: B7       [17]     		or	a	
+E901: 2836     [24|29]  		jr	z,alloc		;skip if not
+                        ;
+                        ;		more unallocated records remain
+E903: 3D       [28]     		dec	a		;unacnt = unacnt-1
+E904: 3274FB   [41]     		ld	(unacnt),a
+E907: 3A68FB   [54]     		ld	a,(sekdsk)		;same disk?
+E90A: 2175FB   [64]     		ld	hl,unadsk
+E90D: BE       [71]     		cp	(hl)		;sekdsk = unadsk?
+E90E: C239E9   [81|81]  		jp	nz,alloc		;skip if not
+                        ;
+                        ;		disks are the same
+E911: 2176FB   [91]     		ld	hl,unatrk
+E914: CDD8E9   [108]    		call	sektrkcmp	;sektrk = unatrk?
+E917: C239E9   [118|118]		jp	nz,alloc		;skip if not
+                        ;
+                        ;		tracks are the same
+E91A: 3A6BFB   [131]    		ld	a,(seksec)		;same sector?
+E91D: 2178FB   [141]    		ld	hl,unasec
+E920: BE       [148]    		cp	(hl)		;seksec = unasec?
+E921: C239E9   [158|158]		jp	nz,alloc		;skip if not
+                        ;
+                        ;		match, move to next sector for future ref
+E924: 34       [169]    		inc	(hl)		;unasec = unasec+1
+E925: 7E       [176]    		ld	a,(hl)		;end of track?
+E926: FE80     [183]    		cp	cpmspt		;count CP/M sectors
+E928: 3809     [190|195]		jr	c,noovf		;skip if no overflow
+                        ;
+                        ;		overflow to next track
+E92A: 3600     [200]    		ld	(hl),0		;unasec = 0
+E92C: 2A76FB   [216]    		ld	hl,(unatrk)
+E92F: 23       [222]    		inc	hl
+E930: 2276FB   [238]    		ld	(unatrk),hl		;unatrk = unatrk+1
+                        ;
+E933:                   noovf:
+                        		;match found, mark as unnecessary read
+E933: AF       [ 4]     		xor	a		;0 to accumulator
+E934: 327AFB   [17]     		ld	(rsflag),a		;rsflag = 0
+E937: 1808     [29]     		jr	rwoper		;to perform the write
+                        ;
+E939:                   alloc:
+                        		;not an unallocated record, requires pre-read
+E939: AF       [ 4]     		xor	a		;0 to accum
+E93A: 3274FB   [17]     		ld	(unacnt),a		;unacnt = 0
+E93D: 3C       [21]     		inc	a		;1 to accum
+E93E: 327AFB   [34]     		ld	(rsflag),a		;rsflag = 1
+                        
+                        ;------------------------------------------------------------------------------------------------
+E941:                   rwoper:
+                        		;enter here to perform the read/write
+E941: AF       [ 4]     		xor	a		;zero to accum
+E942: 3279FB   [17]     		ld	(erflag),a		;no errors (yet)
+E945: 3A6BFB   [30]     		ld	a,(seksec)		;compute host sector
+E948: B7       [34]     		or	a		;carry = 0
+E949: 1F       [38]     		rra			;shift right
+E94A: B7       [42]     		or	a		;carry = 0
+E94B: 1F       [46]     		rra			;shift right
+E94C: 3271FB   [59]     		ld	(sekhst),a		;host sector to seek
+                        ;
+                        ;		active host sector?
+E94F: 2172FB   [69]     		ld	hl,hstact	;host active flag
+E952: 7E       [76]     		ld	a,(hl)
+E953: 3601     [86]     		ld	(hl),1		;always becomes 1
+E955: B7       [90]     		or	a		;was it already?
+E956: 2821     [97|102] 		jr	z,filhst		;fill host if not
+                        ;
+                        ;		host buffer active, same as seek buffer?
+E958: 3A68FB   [110]    		ld	a,(sekdsk)
+E95B: 216DFB   [120]    		ld	hl,hstdsk	;same disk?
+E95E: BE       [127]    		cp	(hl)		;sekdsk = hstdsk?
+E95F: 2011     [134|139]		jr	nz,nomatch
+                        ;
+                        ;		same disk, same track?
+E961: 216EFB   [144]    		ld	hl,hsttrk
+E964: CDD8E9   [161]    		call	sektrkcmp	;sektrk = hsttrk?
+E967: 2009     [168|173]		jr	nz,nomatch
+                        ;
+                        ;		same disk, same track, same buffer?
+E969: 3A71FB   [181]    		ld	a,(sekhst)
+E96C: 2170FB   [191]    		ld	hl,hstsec	;sekhst = hstsec?
+E96F: BE       [198]    		cp	(hl)
+E970: 2824     [205|210]		jr	z,match		;skip if match
+                        ;
+E972:                   nomatch:
+                        		;proper disk, but not correct sector
+E972: 3A73FB   [13]     		ld	a,(hstwrt)		;host written?
+E975: B7       [17]     		or	a
+E976: C478EA   [27|34]  		call	nz,writehst	;clear host buff
+                        ;
+E979:                   filhst:
+                        		;may have to fill the host buffer
+E979: 3A68FB   [13]     		ld	a,(sekdsk)
+E97C: 326DFB   [26]     		ld	(hstdsk),a
+E97F: 2A69FB   [42]     		ld	hl,(sektrk)
+E982: 226EFB   [58]     		ld	(hsttrk),hl
+E985: 3A71FB   [71]     		ld	a,(sekhst)
+E988: 3270FB   [84]     		ld	(hstsec),a
+E98B: 3A7AFB   [97]     		ld	a,(rsflag)		;need to read?
+E98E: B7       [101]    		or	a
+E98F: C450EA   [111|118]		call	nz,readhst		;yes, if 1
+E992: AF       [115]    		xor	a		;0 to accum
+E993: 3273FB   [128]    		ld	(hstwrt),a		;no pending write
+                        ;
+E996:                   match:
+                        		;copy data to or from buffer
+E996: 3A6BFB   [13]     		ld	a,(seksec)		;mask buffer number
+E999: E603     [20]     		and	secmsk		;least signif bits
+E99B: 6F       [24]     		ld	l,a		;ready to shift
+E99C: 2600     [31]     		ld	h,0		;double count
+E99E: 29       [42]     		add	hl,hl
+E99F: 29       [53]     		add	hl,hl
+E9A0: 29       [64]     		add	hl,hl
+E9A1: 29       [75]     		add	hl,hl
+E9A2: 29       [86]     		add	hl,hl
+E9A3: 29       [97]     		add	hl,hl
+E9A4: 29       [108]    		add	hl,hl
+                        ;		hl has relative host buffer address
+E9A5: 117FFB   [118]    		ld	de,hstbuf
+E9A8: 19       [129]    		add	hl,de		;hl = host address
+E9A9: EB       [133]    		ex	de,hl			;now in DE
+E9AA: 2A7DFB   [149]    		ld	hl,(dmaAddr)		;get/put CP/M data
+E9AD: 0E80     [156]    		ld	c,128		;length of move
+E9AF: 3A7BFB   [169]    		ld	a,(readop)		;which way?
+E9B2: B7       [173]    		or	a
+E9B3: 2006     [180|185]		jr	nz,rwmove		;skip if read
+                        ;
+                        ;	write operation, mark and switch direction
+E9B5: 3E01     [187]    		ld	a,1
+E9B7: 3273FB   [200]    		ld	(hstwrt),a		;hstwrt = 1
+E9BA: EB       [204]    		ex	de,hl			;source/dest swap
+                        ;
+E9BB:                   rwmove:
+                        		;C initially 128, DE is source, HL is dest
+E9BB: 1A       [ 7]     		ld	a,(de)		;source character
+E9BC: 13       [13]     		inc	de
+E9BD: 77       [20]     		ld	(hl),a		;to dest
+E9BE: 23       [26]     		inc	hl
+E9BF: 0D       [30]     		dec	c		;loop 128 times
+E9C0: 20F9     [37|42]  		jr	nz,rwmove
+                        ;
+                        ;		data has been moved to/from host buffer
+E9C2: 3A7CFB   [50]     		ld	a,(wrtype)		;write type
+E9C5: FE01     [57]     		cp	wrdir		;to directory?
+E9C7: 3A79FB   [70]     		ld	a,(erflag)		;in case of errors
+E9CA: C0       [75|81]  		ret	nz			;no further processing
+                        ;
+                        ;		clear host buffer for directory write
+E9CB: B7       [79]     		or	a		;errors?
+E9CC: C0       [84|90]  		ret	nz			;skip if so
+E9CD: AF       [88]     		xor	a		;0 to accum
+E9CE: 3273FB   [101]    		ld	(hstwrt),a		;buffer written
+E9D1: CD78EA   [118]    		call	writehst
+E9D4: 3A79FB   [131]    		ld	a,(erflag)
+E9D7: C9       [141]    		ret
+                        
+                        ;------------------------------------------------------------------------------------------------
+                        ;Utility subroutine for 16-bit compare
+E9D8:                   sektrkcmp:
+                        		;HL = .unatrk or .hsttrk, compare with sektrk
+E9D8: EB       [ 4]     		ex	de,hl
+E9D9: 2169FB   [14]     		ld	hl,sektrk
+E9DC: 1A       [21]     		ld	a,(de)		;low byte compare
+E9DD: BE       [28]     		cp	(HL)		;same?
+E9DE: C0       [33|39]  		ret	nz			;return if not
+                        ;		low bytes equal, test high 1s
+E9DF: 13       [39]     		inc	de
+E9E0: 23       [45]     		inc	hl
+E9E1: 1A       [52]     		ld	a,(de)
+E9E2: BE       [59]     		cp	(hl)	;sets flags
+E9E3: C9       [69]     		ret
+                        
+                        ;================================================================================================
+                        ; Convert track/head/sector into LBA for physical access to the disk
+                        ;================================================================================================
+E9E4:                   setLBAaddr:	
+E9E4: 2A6EFB   [16]     		LD	HL,(hsttrk)
+E9E7: CB05     [24]     		RLC	L
+E9E9: CB05     [32]     		RLC	L
+E9EB: CB05     [40]     		RLC	L
+E9ED: CB05     [48]     		RLC	L
+E9EF: CB05     [56]     		RLC	L
+E9F1: 7D       [60]     		LD	A,L
+E9F2: E6E0     [67]     		AND	0E0H
+E9F4: 6F       [71]     		LD	L,A
+E9F5: 3A70FB   [84]     		LD	A,(hstsec)
+E9F8: 85       [88]     		ADD	A,L
+E9F9: 3244FB   [101]    		LD	(lba0),A
+                        
+E9FC: 2A6EFB   [117]    		LD	HL,(hsttrk)
+E9FF: CB0D     [125]    		RRC	L
+EA01: CB0D     [133]    		RRC	L
+EA03: CB0D     [141]    		RRC	L
+EA05: 7D       [145]    		LD	A,L
+EA06: E61F     [152]    		AND	01FH
+EA08: 6F       [156]    		LD	L,A
+EA09: CB04     [164]    		RLC	H
+EA0B: CB04     [172]    		RLC	H
+EA0D: CB04     [180]    		RLC	H
+EA0F: CB04     [188]    		RLC	H
+EA11: CB04     [196]    		RLC	H
+EA13: 7C       [200]    		LD	A,H
+EA14: E620     [207]    		AND	020H
+EA16: 67       [211]    		LD	H,A
+EA17: 3A6DFB   [224]    		LD	A,(hstdsk)
+EA1A: CB07     [232]    		RLC	a
+EA1C: CB07     [240]    		RLC	a
+EA1E: CB07     [248]    		RLC	a
+EA20: CB07     [256]    		RLC	a
+EA22: CB07     [264]    		RLC	a
+EA24: CB07     [272]    		RLC	a
+EA26: E6C0     [279]    		AND	0C0H
+EA28: 84       [283]    		ADD	A,H
+EA29: 85       [287]    		ADD	A,L
+EA2A: 3245FB   [300]    		LD	(lba1),A
+                        		
+                        
+EA2D: 3A6DFB   [313]    		LD	A,(hstdsk)
+EA30: CB0F     [321]    		RRC	A
+EA32: CB0F     [329]    		RRC	A
+EA34: E603     [336]    		AND	03H
+EA36: 3246FB   [349]    		LD	(lba2),A
+                        
+EA39: C5       [360]    		push 	BC
+EA3A: 013200   [370]    		ld	bc, dparm+2
+EA3D: 3A44FB   [383]    		LD	A,(lba0)
+EA40: ED79     [395]    		OUT 	(c),A
+                        		
+EA42: 03       [401]    		inc	bc	
+EA43: 3A45FB   [414]    		LD	A,(lba1)
+EA46: ED79     [426]    		OUT 	(C),A
+                        		
+EA48: 03       [432]    		inc	bc
+EA49: 3A46FB   [445]    		LD	A,(lba2)
+EA4C: ED79     [457]    		OUT 	(C),A
+                        
+EA4E: C1       [467]    		pop	bc
+EA4F: C9       [477]    		RET				
+                        
+                        ;================================================================================================
+                        ; Read physical sector from host
+                        ;================================================================================================
+                        
+EA50:                   readhst:
+EA50: F5       [11]     		PUSH 	AF
+EA51: C5       [22]     		PUSH 	BC
+EA52: E5       [33]     		PUSH 	HL
+                        
+EA53: CDE4E9   [50]     		CALL 	setLBAaddr	;Set sector address
+EA56: 217FFB   [60]     		LD 	HL,hstbuf
+EA59: 013000   [70]     		ld	bc,dparm
+EA5C: 7D       [74]     		ld	A,L
+EA5D: ED79     [86]     		out	(c),a
+EA5F: 03       [92]     		inc 	bc
+EA60: 7C       [96]     		ld	a,h
+EA61: ED79     [108]    		out	(c),a		;Send address to IO buffer for disk read	
+                        					
+EA63: 012000   [118]    		ld	bc,dcmd
+EA66: 3E01     [125]    		ld	a,$01		;Read command
+EA68: ED79     [137]    		out	(c),a		;Send Read command to ESP8266
+EA6A: ED78     [12]     readhstwt:	in	a,(c)
+EA6C: FE00     [19]     		cp	0
+EA6E: 20FA     [26|31]  		jr	nz,readhstwt	;Wait for command to complete
+                        
+EA70: E1       [36]     		POP 	HL
+EA71: C1       [46]     		POP 	BC
+EA72: F1       [56]     		POP 	AF
+                        
+EA73: AF       [60]     		XOR 	a
+EA74: 3279FB   [73]     		ld	(erflag),a
+EA77: C9       [83]     		RET
+                        
+                        ;================================================================================================
+                        ; Write physical sector to host
+                        ;================================================================================================
+                        
+EA78:                   writehst:
+EA78: F5       [11]     		PUSH 	AF
+EA79: C5       [22]     		PUSH 	BC
+EA7A: E5       [33]     		PUSH 	HL
+                        
+EA7B: CDE4E9   [50]     		CALL 	setLBAaddr	;Set sector address
+EA7E: 217FFB   [60]     		LD 	HL,hstbuf
+EA81: 013000   [70]     		ld	bc,dparm
+EA84: 7D       [74]     		ld	A,L
+EA85: ED79     [86]     		out	(c),a
+EA87: 03       [92]     		inc 	bc
+EA88: 7C       [96]     		ld	a,h
+EA89: ED79     [108]    		out	(c),a		;Send address to IO buffer for disk read	
+                        
+EA8B: 012000   [118]    		ld	bc,dcmd
+EA8E: 3E02     [125]    		ld	a,$02		;Write command
+EA90: ED79     [137]    		out	(c),a		;Send Read command to ESP8266
+EA92: ED78     [12]     writehstwt:	in	a,(c)
+EA94: FE00     [19]     		cp	0
+EA96: 20FA     [26|31]  		jr	nz,writehstwt	;Wait for command to complete
+                        
+EA98: E1       [36]     		POP 	HL
+EA99: C1       [46]     		POP 	BC
+EA9A: F1       [56]     		POP 	AF
+                        
+EA9B: AF       [60]     		XOR 	a
+EA9C: 3279FB   [73]     		ld	(erflag),a
+EA9F: C9       [83]     		RET
+                        
+                        
+                        ;================================================================================================
+                        ; Utilities
+                        ;================================================================================================
+                        
+EAA0:                   printInline:
+EAA0: E3       [19]     		EX 	(SP),HL 	; PUSH HL and put RET ADDress into HL
+EAA1: F5       [30]     		PUSH 	AF
+EAA2: C5       [41]     		PUSH 	BC
+EAA3: 7E       [ 7]     nextILChar:	LD 	A,(HL)
+EAA4: FE00     [14]     		CP	0
+EAA6: 2807     [21|26]  		JR	Z,endOfPrint
+EAA8: 4F       [25]     		LD  	C,A
+EAA9: CD53E8   [42]     		CALL 	conout		; Print to TTY
+EAAC: 23       [48]     		iNC 	HL
+EAAD: 18F4     [60]     		JR	nextILChar
+EAAF: 23       [ 6]     endOfPrint:	INC 	HL 		; Get past "null" terminator
+EAB0: C1       [16]     		POP 	BC
+EAB1: F1       [26]     		POP 	AF
+EAB2: E3       [45]     		EX 	(SP),HL 	; PUSH new RET ADDress on stack and restore HL
+EAB3: C9       [55]     		RET
+                        
+                        ;================================================================================================
+                        ; Data storage
+                        ;================================================================================================
+                        
+EAB4: FFFFFFFF          dirbuf: 	.ds 128 		;scratch directory area
+EAB8: FF...             
+EB34: FFFFFFFF          alv00: 		.ds 257			;allocation vector 0
+EB38: FF...             
+EC35: FFFFFFFF          alv01: 		.ds 257			;allocation vector 1
+EC39: FF...             
+ED36: FFFFFFFF          alv02: 		.ds 257			;allocation vector 2
+ED3A: FF...             
+EE37: FFFFFFFF          alv03: 		.ds 257			;allocation vector 3
+EE3B: FF...             
+EF38: FFFFFFFF          alv04: 		.ds 257			;allocation vector 4
+EF3C: FF...             
+F039: FFFFFFFF          alv05: 		.ds 257			;allocation vector 5
+F03D: FF...             
+F13A: FFFFFFFF          alv06: 		.ds 257			;allocation vector 6
+F13E: FF...             
+F23B: FFFFFFFF          alv07: 		.ds 257			;allocation vector 7
+F23F: FF...             
+F33C: FFFFFFFF          alv08: 		.ds 257			;allocation vector 8
+F340: FF...             
+F43D: FFFFFFFF          alv09: 		.ds 257			;allocation vector 9
+F441: FF...             
+F53E: FFFFFFFF          alv10: 		.ds 257			;allocation vector 10
+F542: FF...             
+F63F: FFFFFFFF          alv11: 		.ds 257			;allocation vector 11
+F643: FF...             
+F740: FFFFFFFF          alv12: 		.ds 257			;allocation vector 12
+F744: FF...             
+F841: FFFFFFFF          alv13: 		.ds 257			;allocation vector 13
+F845: FF...             
+F942: FFFFFFFF          alv14: 		.ds 257			;allocation vector 14
+F946: FF...             
+FA43: FFFFFFFF          alv15: 		.ds 257			;allocation vector 15
+FA47: FF...             
+                        
+FB44: 00                lba0		.DB	00h
+FB45: 00                lba1		.DB	00h
+FB46: 00                lba2		.DB	00h
+FB47: 00                lba3		.DB	00h
+                        
+FB48: FFFFFFFF          		.DS	020h		; Start of BIOS stack area.
+FB4C: FF...             
+FB68:                   biosstack:	.EQU	$
+                        
+FB68: FF                sekdsk:		.ds	1		;seek disk number
+FB69: FFFF              sektrk:		.ds	2		;seek track number
+FB6B: FFFF              seksec:		.ds	2		;seek sector number
+                        ;
+FB6D: FF                hstdsk:		.ds	1		;host disk number
+FB6E: FFFF              hsttrk:		.ds	2		;host track number
+FB70: FF                hstsec:		.ds	1		;host sector number
+                        ;
+FB71: FF                sekhst:		.ds	1		;seek shr secshf
+FB72: FF                hstact:		.ds	1		;host active flag
+FB73: FF                hstwrt:		.ds	1		;host written flag
+                        ;
+FB74: FF                unacnt:		.ds	1		;unalloc rec cnt
+FB75: FF                unadsk:		.ds	1		;last unalloc disk
+FB76: FFFF              unatrk:		.ds	2		;last unalloc track
+FB78: FF                unasec:		.ds	1		;last unalloc sector
+                        ;
+FB79: FF                erflag:		.ds	1		;error reporting
+FB7A: FF                rsflag:		.ds	1		;read sector flag
+FB7B: FF                readop:		.ds	1		;1 if read operation
+FB7C: FF                wrtype:		.ds	1		;write operation type
+FB7D: FFFF              dmaAddr:	.ds	2		;last dma address
+FB7F: FFFFFFFF          hstbuf:		.ds	512		;host buffer
+FB83: FF...             
+                        
+FD7F:                   hstBufEnd:	.EQU	$
+                        
+                        ;serABuf:	.ds	SER_BUFSIZE	; SIO A Serial buffer
+                        ;serAInPtr	.DW	00h
+                        ;serARdPtr	.DW	00h
+                        ;serABufUsed	.DB	00h
+                        ;serBBuf:	.ds	SER_BUFSIZE	; SIO B Serial buffer
+                        ;serBInPtr	.DW	00h
+                        ;serBRdPtr	.DW	00h
+                        ;serBBufUsed	.DB	00h
+                        
+                        ;serialVarsEnd:	.EQU	$
+                        
+                        
+FD7F:                   biosEnd:	.EQU	$
+                        
+                        ; Disable the ROM, pop the active IO port from the stack (supplied by monitor),
+                        ; then start CP/M
+FD7F:                   popAndRun:
+                        
+                        ;		LD	A,$01 ;(List is TTY:, Punch is TTY:, Reader is TTY:, Console is CRT:)
+FD7F: 3E00     [ 7]     		LD	A,$00 ;(List is TTY:, Punch is TTY:, Reader is TTY:, Console is TTY:)
+FD81: 320300   [13]     setIOByte:	LD 	(iobyte),A
+FD84: C300E6   [23]     		JP	bios
+                        
+                        
+                        ;=================================================================================
+                        ; Relocate TPA area from 4100 to 0100 then start CP/M
+                        ; Used to manually transfer a loaded program after CP/M was previously loaded
+                        ;=================================================================================
+                        
+FD87: FFFFFFFF          		.org	0FFE8H
+FD8B: FF...             
+                        
+FFE8: C300E6   [33]     		JP	bios
+                        
+                        ;=================================================================================
+                        ; Normal start CP/M vector
+                        ;=================================================================================
+                        
+FFEB: FFFFFFFF          		.ORG 0FFFEH
+FFEF: FF...             
+FFFE: 7FFD              		.dw	popAndRun
+                        
+                        		.END
+
+
+; +++ segments +++
+
+#CODE          = $E600 = 58880,  size = $1A00 =  6656
+
+; +++ global symbols +++
+
+CR            = $000D =    13          cbios.asm:64
+FF            = $000C =    12          cbios.asm:63
+LF            = $000A =    10          cbios.asm:62
+_end          = $0000 = 65536          cbios.asm:67 (unused)
+_size         = $1A00 =  6656          cbios.asm:67 (unused)
+alloc         = $E939 = 59705          cbios.asm:457
+alv00         = $EB34 = 60212          cbios.asm:748
+alv01         = $EC35 = 60469          cbios.asm:749
+alv02         = $ED36 = 60726          cbios.asm:750
+alv03         = $EE37 = 60983          cbios.asm:751
+alv04         = $EF38 = 61240          cbios.asm:752
+alv05         = $F039 = 61497          cbios.asm:753
+alv06         = $F13A = 61754          cbios.asm:754
+alv07         = $F23B = 62011          cbios.asm:755
+alv08         = $F33C = 62268          cbios.asm:756
+alv09         = $F43D = 62525          cbios.asm:757
+alv10         = $F53E = 62782          cbios.asm:758
+alv11         = $F63F = 63039          cbios.asm:759
+alv12         = $F740 = 63296          cbios.asm:760
+alv13         = $F841 = 63553          cbios.asm:761
+alv14         = $F942 = 63810          cbios.asm:762
+alv15         = $FA43 = 64067          cbios.asm:763
+bdos          = $D806 = 55302          cbios.asm:19
+bios          = $E600 = 58880          cbios.asm:20
+biosEnd       = $FD7F = 64895          cbios.asm:811 (unused)
+biosstack     = $FB68 = 64360          cbios.asm:771
+blksiz        = $1000 =  4096          cbios.asm:32
+boot          = $E742 = 59202          cbios.asm:129
+ccp           = $D000 = 53248          cbios.asm:18
+chgdsk        = $E895 = 59541          cbios.asm:343
+chkuna        = $E8FD = 59645          cbios.asm:414
+conin         = $E816 = 59414          cbios.asm:240
+coninA        = $E825 = 59429          cbios.asm:250
+coninB        = $E830 = 59440          cbios.asm:261
+conout        = $E853 = 59475          cbios.asm:288
+conoutA1      = $E861 = 59489          cbios.asm:297
+conoutA1_loop = $E863 = 59491          cbios.asm:299
+conoutB1      = $E86F = 59503          cbios.asm:309
+conoutB1_loop = $E871 = 59505          cbios.asm:311
+const         = $E7D8 = 59352          cbios.asm:192
+constA        = $E7EB = 59371          cbios.asm:203
+constB        = $E7FA = 59386          cbios.asm:217
+cpmspt        = $0080 =   128          cbios.asm:36
+dataAEmpty    = $E7F6 = 59382          cbios.asm:211
+dataBEmpty    = $E805 = 59397          cbios.asm:225
+dcmd          = $0020 =    32          cbios.asm:60
+dirbuf        = $EAB4 = 60084          cbios.asm:747
+dmaAddr       = $FB7D = 64381          cbios.asm:794
+dparm         = $0030 =    48          cbios.asm:59
+dpb           = $E733 = 59187          cbios.asm:112
+dpbase        = $E633 = 58931          cbios.asm:94
+endOfPrint    = $EAAF = 60079          cbios.asm:737
+erflag        = $FB79 = 64377          cbios.asm:790
+filhst        = $E979 = 59769          cbios.asm:506
+gocpm         = $E7B0 = 59312          cbios.asm:162
+home          = $E8A8 = 59560          cbios.asm:356
+homed         = $E8B1 = 59569          cbios.asm:361
+hstBufEnd     = $FD7F = 64895          cbios.asm:797 (unused)
+hstact        = $FB72 = 64370          cbios.asm:782
+hstblk        = $0004 =     4          cbios.asm:35
+hstbuf        = $FB7F = 64383          cbios.asm:795
+hstdsk        = $FB6D = 64365          cbios.asm:777
+hstsec        = $FB70 = 64368          cbios.asm:779
+hstsiz        = $0200 =   512          cbios.asm:33
+hstspt        = $0020 =    32          cbios.asm:34
+hsttrk        = $FB6E = 64366          cbios.asm:778
+hstwrt        = $FB73 = 64371          cbios.asm:783
+iobyte        = $0003 =     3          cbios.asm:24
+lba0          = $FB44 = 64324          cbios.asm:765
+lba1          = $FB45 = 64325          cbios.asm:766
+lba2          = $FB46 = 64326          cbios.asm:767
+lba3          = $FB47 = 64327          cbios.asm:768 (unused)
+list          = $E83B = 59451          cbios.asm:272
+list2         = $E83C = 59452          cbios.asm:273
+listst        = $E87D = 59517          cbios.asm:323
+match         = $E996 = 59798          cbios.asm:520
+nextILChar    = $EAA3 = 60067          cbios.asm:730
+nomatch       = $E972 = 59762          cbios.asm:500
+noovf         = $E933 = 59699          cbios.asm:451
+popAndRun     = $FD7F = 64895          cbios.asm:815
+printInline   = $EAA0 = 60064          cbios.asm:726
+punch         = $E847 = 59463          cbios.asm:280
+read          = $E8C6 = 59590          cbios.asm:382
+reader        = $E809 = 59401          cbios.asm:231
+reader2       = $E80B = 59403          cbios.asm:234
+readhst       = $EA50 = 59984          cbios.asm:659
+readhstwt     = $EA6A = 60010          cbios.asm:676
+readop        = $FB7B = 64379          cbios.asm:792
+rsflag        = $FB7A = 64378          cbios.asm:791
+rwmove        = $E9BB = 59835          cbios.asm:548
+rwoper        = $E941 = 59713          cbios.asm:465
+secmsk        = $0003 =     3          cbios.asm:37
+sectran       = $E8C3 = 59587          cbios.asm:377
+sekdsk        = $FB68 = 64360          cbios.asm:773
+sekhst        = $FB71 = 64369          cbios.asm:781
+seksec        = $FB6B = 64363          cbios.asm:775
+sektrk        = $FB69 = 64361          cbios.asm:774
+sektrkcmp     = $E9D8 = 59864          cbios.asm:574
+seldsk        = $E880 = 59520          cbios.asm:330
+setIOByte     = $FD81 = 64897          cbios.asm:819 (unused)
+setLBAaddr    = $E9E4 = 59876          cbios.asm:591
+setdma        = $E8BE = 59582          cbios.asm:373
+setsec        = $E8B9 = 59577          cbios.asm:369
+settrk        = $E8B4 = 59572          cbios.asm:365
+tpabuf        = $0080 =   128          cbios.asm:26
+uart_a        = $0080 =   128          cbios.asm:55
+uart_a_lsr    = $0085 =   133          cbios.asm:56
+uart_b        = $0080 =   128          cbios.asm:57
+uart_b_lsr    = $0085 =   133          cbios.asm:58
+unacnt        = $FB74 = 64372          cbios.asm:785
+unadsk        = $FB75 = 64373          cbios.asm:786
+unasec        = $FB78 = 64376          cbios.asm:788
+unatrk        = $FB76 = 64374          cbios.asm:787
+userdrv       = $0004 =     4          cbios.asm:25
+waitForCharA  = $E826 = 59430          cbios.asm:252
+waitForCharB  = $E831 = 59441          cbios.asm:263
+wboot         = $E7AC = 59308          cbios.asm:153
+wboote        = $E603 = 58883          cbios.asm:74
+wrall         = $0000 =     0          cbios.asm:41 (unused)
+wrdir         = $0001 =     1          cbios.asm:42
+write         = $E8DA = 59610          cbios.asm:395
+writehst      = $EA78 = 60024          cbios.asm:692
+writehstwt    = $EA92 = 60050          cbios.asm:709
+wrtype        = $FB7C = 64380          cbios.asm:793
+wrual         = $0002 =     2          cbios.asm:43
+
+
+total time: 0.0088 sec.
+no errors

@@ -1,0 +1,69 @@
+                        ; --------------------------------------
+                        ; zasm: assemble "CBOOT.ASM"
+                        ; date: 2021-05-18 16:35:56
+                        ; --------------------------------------
+
+
+                        ;------------------------------------------------------------------------------
+                        ;
+                        ; Z80 Monitor Rom
+                        ;
+                        ;------------------------------------------------------------------------------
+                        ; General Equates
+                        ;------------------------------------------------------------------------------
+                        
+000D:                   CR		.EQU	0DH
+000A:                   LF		.EQU	0AH
+001B:                   ESC		.EQU	1BH
+0003:                   CTRLC		.EQU	03H
+000C:                   CLS		.EQU	0CH
+                        
+                        ;Virtual I/O Registers
+FF00:                   uart_a_tx	equ	$ff00
+FF10:                   uart_a_rx	equ	$ff10
+FF01:                   uart_b_tx	equ	$ff01
+FF11:                   uart_b_rx	equ	$ff11
+FF30:                   dparm		equ	$ff30
+FF20:                   dcmd		equ	$ff20
+                        
+4032:                   STACK   	.EQU    $4032	; Stack top
+                        
+                        
+                        
+                        ;------------------------------------------------------------------------------
+                        ;                         START OF MONITOR ROM
+                        ;------------------------------------------------------------------------------
+                        
+0000:                   		.org	$0000
+                        
+                        
+0000: C300E6   [10]     		JP	$E600
+                        		;JP	$FFFE
+                        
+                        		.END
+
+
+; +++ segments +++
+
+#CODE          = $0000 =     0,  size = $0003 =     3
+
+; +++ global symbols +++
+
+CLS       = $000C =    12          CBOOT.ASM:13 (unused)
+CR        = $000D =    13          CBOOT.ASM:9 (unused)
+CTRLC     = $0003 =     3          CBOOT.ASM:12 (unused)
+ESC       = $001B =    27          CBOOT.ASM:11 (unused)
+LF        = $000A =    10          CBOOT.ASM:10 (unused)
+STACK     = $4032 = 16434          CBOOT.ASM:23 (unused)
+_end      = $0003 =     3          CBOOT.ASM:30 (unused)
+_size     = $0003 =     3          CBOOT.ASM:30 (unused)
+dcmd      = $FF20 = 65312          CBOOT.ASM:21 (unused)
+dparm     = $FF30 = 65328          CBOOT.ASM:20 (unused)
+uart_a_rx = $FF10 = 65296          CBOOT.ASM:17 (unused)
+uart_a_tx = $FF00 = 65280          CBOOT.ASM:16 (unused)
+uart_b_rx = $FF11 = 65297          CBOOT.ASM:19 (unused)
+uart_b_tx = $FF01 = 65281          CBOOT.ASM:18 (unused)
+
+
+total time: 0.0011 sec.
+no errors

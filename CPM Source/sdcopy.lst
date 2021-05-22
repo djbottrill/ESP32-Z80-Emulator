@@ -1,0 +1,236 @@
+              	; --------------------------------------
+              	; zasm: assemble "sdcopy.asm"
+              	; date: 2018-11-17 22:15:15
+              	; --------------------------------------
+
+
+              	;==================================================================================
+              	; Contents of this file are copyright David Bottrill
+              	; 
+              	;
+              	; You have permission to use this for NON COMMERCIAL USE ONLY
+              	; If you wish to use it elsewhere, please include an acknowledgement to myself.
+              	;
+              	;
+              	;==================================================================================
+              	
+0100:         	TPA		.EQU	100H
+0000:         	REBOOT		.EQU	0H
+0005:         	BDOS		.EQU	5H
+0006:         	CONIO		.EQU	6
+0001:         	CONINP		.EQU	1
+0002:         	CONOUT		.EQU	2
+0009:         	PSTRING		.EQU	9
+0016:         	MAKEF		.EQU	22
+0010:         	CLOSEF		.EQU	16
+0015:         	WRITES		.EQU	21
+0013:         	DELF		.EQU	19
+0020:         	SETUSR		.EQU	32
+              	
+000D:         	CR		.EQU	0DH
+000A:         	LF		.EQU	0AH
+              	
+005C:         	FCB		.EQU	05CH
+0080:         	BUFF		.EQU	080H
+              	
+              	;Virtual I/O Registers
+FF00:         	uart_a_tx	equ	$ff00
+FF10:         	uart_a_rx	equ	$ff10
+FF01:         	uart_b_tx	equ	$ff01
+FF11:         	uart_b_rx	equ	$ff11
+FF30:         	dparm		equ	$ff30
+FF20:         	dcmd		equ	$ff20
+              	
+              	
+0100:         			.ORG TPA
+              	
+              	
+              	;extract and assemble filename as 8.3 from FCB 
+              	
+0100: 215D00  			LD	HL,FCB+1
+0103: 11F701  			LD	DE,filename
+0106: 0E08    			ld	c,8
+0108: 7E      	floop:		ld	a,(hl)
+0109: 12      			ld	(de),a
+010A: FE20    			cp	a," "
+010C: 2808    			jr	z,getext
+010E: 23      			inc	hl
+010F: 13      			inc	de
+0110: 0D      			dec 	c
+0111: 79      			ld	a,c
+0112: FE00    			cp	a,0
+0114: 20F2    			jr	nz,floop
+              	
+0116: 3E2E    	getext:		ld	a,"."
+0118: 12      			ld	(de),a
+0119: 13      			inc	de
+011A: 216500  			ld	hl,FCB+9
+011D: 010300  			ld	bc,3
+0120: EDB0    			ldir
+              	
+              	; Simply print the filename for diagnostic purposes
+0122: 0E09    			LD	C,9
+0124: 11F701  			LD	DE,filename
+0127: CD0500  			CALL	BDOS
+              		
+              	
+              	;Call ESP8266 to check for the file's existence and size.
+              	
+012A: 0130FF  			ld	bc,dparm
+012D: 218000  			ld	hl,BUFF
+0130: ED69    			out	(c),L
+0132: 03      			inc	bc
+0133: ED61    			out	(c),H		;Write buffer address to command buffer
+0135: 03      			inc	bc
+0136: 21F701  			ld	hl, filename
+0139: 7E      	lloop1		ld	a,(hl)
+013A: FE20    			cp	a,20h
+013C: 2808    			jr	z,eof
+013E: ED79    			out	(c),a		;Write filename to command buffer
+0140: 23      			inc	hl
+0141: 03      			inc	bc
+0142: FE00    			cp	0
+0144: 20F3    			jr	nz,lloop1
+              			
+0146: AF      	eof:		xor	a
+0147: ED79    			out	(c),a		;Terminate filename with with 00h
+              	
+0149: 0120FF  			ld	bc,dcmd
+014C: 3E04    			ld	a,4
+014E: ED79    			out	(c),a		;Send file open command
+0150: ED78    	lloop1a		in	a,(c)
+0152: 20FC    			jr	nz,lloop1a	;Wait for it to complete
+              	
+              	; Simply print the block size for diagnostic purposes
+0154: 110602  			ld	de,decbuff
+0157: 2A8000  			ld	hl,(BUFF)
+015A: 22F301  			ld	(blocks),hl	;Save block count
+              	
+              	;		call	Num2Dec		
+              	;		LD	C,9
+              	;		LD	DE,decbuff
+              	;		CALL	BDOS
+              	
+              	; Check if file exists i.e Blocks >0
+015D: 2AF301  			ld	hl,(blocks)
+0160: AF      			xor	a
+0161: BC      			cp	a,h
+0162: 2003    			jr	nz,copy
+0164: BD      			cp	a,l
+0165: 285A    			jr	z,finish
+              	
+0167:         	copy:
+0167: 210000  			ld	hl,0
+016A: 22F501  			ld	(block),hl	;Clear current block number
+              	
+              	;Delete file if it already exists
+016D: 0E13    			LD	C,DELF
+016F: 115C00  			LD	DE,FCB
+0172: CD0500  			CALL	BDOS
+              	;Make new file
+0175: 0E16    			LD	C,MAKEF
+0177: 115C00  			LD	DE,FCB
+017A: CD0500  			CALL	BDOS
+              	
+              		
+              	;Read Block
+017D: 0130FF  	blocklp:	ld	bc,dparm
+0180: 218000  			ld	hl,BUFF
+0183: ED69    			out	(c),L
+0185: 03      			inc	bc
+0186: ED61    			out	(c),H		;Write buffer address to command buffer
+0188: 03      			inc	bc
+0189: 2AF501  			ld	hl,(block)
+018C: ED69    			out	(c),L
+018E: 03      			inc	bc
+018F: ED61    			out	(c),H		;Write block number to command buffer
+              	
+0191: 0120FF  			ld	bc,dcmd
+0194: 3E05    			ld	a,5
+0196: ED79    			out	(c),a		;Send file block read command
+0198: ED78    	readwt		in	a,(c)
+019A: 20FC    			jr	nz,readwt	;Wait for it to complete
+              	
+              	;write block to disk
+019C: 0E15    			LD	C,WRITES
+019E: 115C00  			LD	DE,FCB
+01A1: CD0500  			CALL	BDOS
+              	
+01A4: 2AF501  			ld	HL,(block)
+01A7: 23      			inc	HL
+01A8: 22F501  			ld	(block),HL	;Increment block number
+              	
+01AB: 2AF301  			ld	HL,(blocks)
+01AE: 2B      			dec	HL
+01AF: 22F301  			ld	(blocks),HL	;Decrement block counter
+01B2: AF      			xor	a
+01B3: BC      			cp	a,h
+01B4: 20C7    			jr	nz,blocklp
+01B6: BD      			cp	a,l
+01B7: 20C4    			jr	nz,blocklp
+              	
+              	;Close file
+01B9: 0E10    			LD	C,CLOSEF
+01BB: 115C00  			LD	DE,FCB
+01BE: CD0500  			CALL	BDOS
+              	
+01C1:         	finish:
+              	;		JP	REBOOT
+01C1: C9      			ret
+              	
+              		
+              	; Get a char into A
+01C2: 0E01    	GETCHR: 	LD 	C,CONINP
+01C4: CD0500  			CALL 	BDOS
+01C7: C9      			RET
+              	
+              	
+              	; Write A to output
+01C8: 0E02    	PUTCHR: 	LD 	C,CONOUT
+01CA: 5F      			LD 	E,A
+01CB: CD0500  			CALL	 BDOS
+01CE: C9      			RET
+              	
+              	
+              	;------------------------------------------------------------------------------
+              	; Convert 16 bit Binary in HL to ASCII Decimal buffer in DE
+              	;------------------------------------------------------------------------------
+01CF: 01F0D8  	Num2Dec		ld	bc,-10000
+01D2: CDE701  			call	Num1
+01D5: 0118FC  			ld	bc,-1000
+01D8: CDE701  			call	Num1
+01DB: 019CFF  			ld	bc,-100
+01DE: CDE701  			call	Num1
+01E1: 0EF6    			ld	c,-10
+01E3: CDE701  			call	Num1
+01E6: 48      			ld	c,b
+              	
+01E7: 3E2F    	Num1		ld	a,'0'-1
+01E9: 3C      	Num2		inc	a
+01EA: 09      			add	hl,bc
+01EB: 38FC    			jr	c,Num2
+01ED: ED42    			sbc	hl,bc
+01EF: 12      			ld	(de),a
+01F0: 13      			inc	de
+01F1: C9      			ret
+              	
+              	
+01F2: 00      	byteCount 	.DB	0H
+              	
+01F3: 0000    	blocks		.dw	0
+01F5: 0000    	block		.dw	0
+01F7: 20202020	filename	.byte	"           "
+01FB: 20...   	
+0202: 000D0A24			.byte	0,0dH,0ah,"$"
+0206: 20202020	decbuff		.byte	"       Blocks"
+020A: 20202042	
+020E: 6C6F636B	
+0212: 73      	
+0213: 000D0A24			.byte	0,0dH,0ah,"$"
+              	
+              	
+              			.END
+
+
+total time: 0.0026 sec.
+no errors
