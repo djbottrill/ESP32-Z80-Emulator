@@ -13,8 +13,11 @@ I've only included one disk image bit this can be cloned; format.com will erase 
 Additional CP'M utilities are provided:
 
 sdfies.com  - Lists files in the current SD card directory, defaults to /downloads
+
 sdpath.com - sets the SD card path, defaults to /downloads.
+
 sdcopy.com - copies a file on the SD card to CP/M disk
+
 
 Switch one should be a normally off toggle switch and when closed enables single step mode switch 2 is a push button and is used to step to the next instruction or breakpoint.
 
