@@ -38,9 +38,10 @@ Mode 2 - Stop each time the breakpoint is reached
 Whenver the Z80 stops an a breakpoint all registers are dumped to the console along with the next 4 bytes of code and the top stack entry.
 
 If switch one is on when the ESP32 starts then breakpoint mode is enabled, note that this slows the emulator down by around 50%. Pressing switch 2 will start the Z80 allowing you to turn switch one off if you don't want the CPU to stop at the first breakpoint straight away.
-I will probably update the emulator to ask for the breakpoint address and mode interactively on the console in future versions.
+From V1.2 I've added the ability to set the Breakpoint address and mode interractively on startup through the console. Just boot the ESP32 with switch one on.
 
-The emulator has a virtual 6850 UART that has a base address of 0x80 the baud rate is fixed by the emulator sofware as is configure for 115200 baud.
+The emulator has a virtual 6850 UART that has a base address of 0x80 the baud rate is fixed by the emulator sofware and is configure for 115200 baud.
+The Arduino serial monitor is unsuitable from interractive sessions and I would recommend "Serial" on OSX, "Putty" on windows or "Miniterm" on Linux. 
 
 The emulator has 2 virtual Z80 GPIO Ports, Port A is at 0x00 and is 8 bits in size and ports B is at 0x82 with 2 bits. This should be enough to allow parallel data transfer with the Port B pins being used to strobe and acknowledge.
 Ports 0x01 and 0x03 allow the individual IO port pins to be configured as inputs or outputs setting the bits in this port to 1 configure the the matching IO port bit to output and 0 to input. All ports are by default outputs.
@@ -48,6 +49,6 @@ Ports 0x01 and 0x03 allow the individual IO port pins to be configured as inputs
 The Nascom Basic and CP/M 2.2 code is heavilly based on the work of Grant Searle in particular his 7 chip Z80 SBC and RC-14 computer. the Z80 UART Monitor can be found here:: https://github.com/fiskabollen/z80Monitor
 
 
-
+Note for Lilygo TTGO-T1 users the maximum sketch upload speed in the Arduino IDE seems to be 230400 baud and code uploads sometimes fails if there is an SD card in the reader so you may need to eject the card before uploading the sketch.
 
 
