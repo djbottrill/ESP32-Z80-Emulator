@@ -25,8 +25,8 @@ int debug_delay = 500;
 #define PB1 19
 
 //BreakPoint switches
-#define sw1 4           //Breakpoints on / Off
-#define sw2 0           //Single Setp push button
+#define sw1 4                   //Breakpoints on / Off
+#define sw2 0                   //Single Step push button
 
 //Virtual GPIO Port
 const uint8_t GPP = 0;
@@ -48,7 +48,12 @@ uint8_t   D = 0;
 uint8_t   E = 0;
 uint8_t   H = 0;
 uint8_t   L = 0;
+uint16_t IX = 0;
+uint16_t IY = 0;
+uint16_t PC = 0;
+uint16_t SP = 0;
 
+//Z80 alternate registers
 uint8_t   Aa = 0;
 uint8_t   Fla = 0;
 uint8_t   Ba = 0;
@@ -58,16 +63,10 @@ uint8_t   Ea = 0;
 uint8_t   Ha = 0;
 uint8_t   La = 0;
 
-
-uint16_t IX = 0;
-uint16_t IY = 0;
-uint16_t PC = 0;
-uint16_t SP = 0;
-
 //Z80 flags
 bool Zf = false;                //Zero flag
 bool Cf = false;                //Carry flag
-bool Sf = false;                //Sign flag (MSB of A Set)
+bool Sf = false;                //Sign flag (MSBit of A Set)
 bool Hf = false;                //Half Carry flag
 bool Pf = false;                //Parity / Overflow flag
 bool Nf = false;                //Add / Subtract flag
@@ -76,7 +75,7 @@ bool RUN = false;               //RUN flag
 bool intE = false;              //Interrupt enable
 uint16_t BP = 0;                //Breakpoint
 uint8_t BPmode = 0;             //Breakpoint mode
-bool bpOn = false;              // BP passed flag
+bool bpOn = false;              //BP passed flag
 uint8_t OC;                     //Opcode store
 uint8_t JR;                     //Signed relative jump
 uint8_t V8;                     //8 Bit operand temp storge
@@ -100,7 +99,7 @@ char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
 TaskHandle_t Task1;             //Task handle
-SemaphoreHandle_t baton;        //Baton, currently not used
+SemaphoreHandle_t baton;        //Process Baton, currently not used
 
 
 void setup() {
@@ -110,27 +109,27 @@ void setup() {
   Serial.println("");
   Serial.println("");
   Serial.write(27);             //Print "esc"
-  Serial.println("c");            //Send esc c to reset screen
+  Serial.println("c");          //Send esc c to reset screen
   Serial.println("****        Shady Grove        ****");
   Serial.println("****  Z80 Emulator for ESP32   ****");
-  Serial.println("**** David Bottrill 2021  V1.1 ****");
+  Serial.println("**** David Bottrill 2021  V1.2 ****");
   Serial.println();
 
-  pinMode(LED_BUILTIN, OUTPUT);             //Built in LED functions as disk active indicator
+  pinMode(LED_BUILTIN, OUTPUT);   //Built in LED functions as disk active indicator
 
   //BreakPoint switch inputs
   pinMode(sw1, INPUT_PULLUP);
   pinMode(sw2, INPUT_PULLUP);
 
-
-  Serial.println("Initialising Virtual GPIO Port");
+  //Initialise virtual GPIO ports
+  Serial.println("Initialising Z80 Virtual GPIO Port");
   portOut(GPP  , 0) ;                        //Port 0 GPIO  A 0 - 7 off
   portOut(GPP + 1, 255) ;                    //Port 1 GPIO A 0 - 7 Outputs
   portOut(GPP + 2, 0) ;                      //Port 0 GPIO B 1 & 1 off
   portOut(GPP + 3, 255) ;                    //Port 1 GPIO B 0 & 1 Outputs
 
-  Serial.println("Initialising Virtual 6850 UART");
   //Initialise virtual 6850 UART
+  Serial.println("Initialising Z80 Virtual 6850 UART");
   pIn[UART_LSR] = 0x40;                       //Set bit to say TX buffer is empty
 
 
@@ -148,7 +147,7 @@ void setup() {
 
   delay(500);  // needed to start-up task1
 
-  Serial.println("Initialising Virtual Disk Controller");
+  Serial.println("Initialising Z80 Virtual Disk Controller");
   if (!SD.begin()) {
     Serial.println("SD Card Mount Failed");
     sdfound = false;
@@ -166,7 +165,7 @@ void setup() {
     Serial.println("Booting from SPIFFS");
     if (!SPIFFS.begin(true)) {
       Serial.println("An Error has occurred while mounting SPIFFS");
-
+      while (1);
     }
     boot = SPIFFS.open("/boot.txt");
     if (boot == 0) {
@@ -192,7 +191,7 @@ void setup() {
           linebuf[l][n] = 0;      //Terminate string
           //Serial.println(linebuf[l]);
           n = 0;
-          if (linebuf[l][0] == '/') l++;  //Ignore lines that dont start with /
+          if (linebuf[l][0] == '/') l++;  //Ignore lines that don't start with /
         }
       }
     }
@@ -217,24 +216,37 @@ void setup() {
     }
     //Serial.println(AA);
     uint32_t Add = strtoul(AA, NULL, 16);
-    FileToRAM(Fs, Add, sdfound);  //False means load from SPIFFS
+    FileToRAM(Fs, Add, sdfound);  //sdfound: false means load from SPIFFS
   }
   boot.close();
 
 
-  PC = 0;
-  BP = 0x0000;
-  BPmode = 0;
+  PC = 0;                         //Set program counter
+  BP = 0x0000;                    //Set initial breakpoint
+  BPmode = 0;                     //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
 
 
   if (digitalRead(sw1) == 0) {
-    Serial.println("Breakpoint mode: press step button to start");
+    Serial.println("Breakpoints enabled");
+    Serial.print("\n\rEnter Breakpoint address in HEX: ");
+    BP = hexToDec(getInput());
+    if (BP > 0xffff) BP = 0xffff;
+    Serial.printf("\n\rBreakpoint set to: %.4X\n\r",BP);
+    Serial.print("\n\rEnter Breakpoint mode: ");
+    BPmode = getInput().toInt();
+    if (BPmode > 2) BPmode = 2;
+    if (BPmode < 0) BPmode = 0;
+    Serial.printf("\n\rBreakpoint mode set to: %1d\n\r",BPmode);
+    Serial.println("Press STEP button to start");
     while (digitalRead(sw2) == 1);
     delay(100);
     while (digitalRead(sw2) == 0);
     delay(100);
     Serial.println("\n\rStarting Z80 with breakpoints enabled\n\r");
 
+//*********************************************************************************************
+//****                    main Z80 emulation loop with breakpoints                         ****
+//*********************************************************************************************  
     //Main loop in breakpoint mode, runs about 50% slower than normal mode
     while (1) {
       //Single Step and breakpoint logic
@@ -261,6 +273,10 @@ void setup() {
       cpu();                              //Execute next instruction
     }
   } else {
+
+//*********************************************************************************************
+//****                           main Z80 emulation loop                                   ****
+//*********************************************************************************************    
     //Main loop in normal mode
     Serial.println("\n\rStarting Z80\n\r");
     while (1) cpu();                             //Execute next instruction
@@ -272,7 +288,9 @@ void loop() {
   //Never gets here !
 }
 
-
+//*********************************************************************************************
+//****                             Breaakpoint function                                    ****
+//*********************************************************************************************
 void BreakPoint(void) {
   dumpReg();
   while (digitalRead(sw2) == 1 && digitalRead(sw1) == 0);
@@ -281,13 +299,63 @@ void BreakPoint(void) {
   delay(100);                                     //Crude de-bounce
 }
 
+//*********************************************************************************************
+//****                       Serial input string function                                  ****
+//*********************************************************************************************
+String getInput() {
+  bool gotS = false;
+  String rs = "";
+  char received;
+  
 
+  while (gotS == false ) {
+    while (Serial.available() > 0)
+    {
+      received = Serial.read();
+      Serial.write(received);                                     //Echo input
+      if (received == '\r' || received == '\n' ) {
+        gotS = true;
+      } else {
+        rs += received;
+      }
+    }
+  }
+ 
+  return (rs);
+}
+
+
+
+//*********************************************************************************************
+//****                           Convert HEX to Decimal                                    ****
+//*********************************************************************************************
+unsigned int hexToDec(String hexString) {
+  unsigned int decValue = 0;
+  int nextInt;
+  for (int i = 0; i < hexString.length(); i++) {
+    nextInt = int(hexString.charAt(i));
+    if (nextInt >= 48 && nextInt <= 57) nextInt = map(nextInt, 48, 57, 0, 9);
+    if (nextInt >= 65 && nextInt <= 70) nextInt = map(nextInt, 65, 70, 10, 15);
+    if (nextInt >= 97 && nextInt <= 102) nextInt = map(nextInt, 97, 102, 10, 15);
+    nextInt = constrain(nextInt, 0, 15);
+
+    decValue = (decValue * 16) + nextInt;
+  }
+  return decValue;
+}
+
+//*********************************************************************************************
+//****                           Get next 8 bit operand                                    ****
+//*********************************************************************************************
 uint8_t get8(void) {
   uint8_t v = RAM[PC];
   PC++;
   return (v);
 }
 
+//*********************************************************************************************
+//****                            Get next 16 bit operand                                  ****
+//*********************************************************************************************
 uint16_t get16(void) {
   uint16_t V = RAM[PC];
   PC++;
@@ -296,6 +364,9 @@ uint16_t get16(void) {
   return (V);
 }
 
+//*********************************************************************************************
+//****                        Calculate parity and set flag                                ****
+//*********************************************************************************************
 void calcP(uint8_t v) {                 //Calc Parity and set flag
   uint8_t i;
   uint8_t z = 0;
@@ -305,6 +376,10 @@ void calcP(uint8_t v) {                 //Calc Parity and set flag
   Pf = !bitRead(z, 0);
 }
 
+
+//*********************************************************************************************
+//****                             Z80 output port handler                                 ****
+//*********************************************************************************************
 void portOut(uint8_t p, uint8_t v) {
   pOut[p] = v;                     //Save a copy of byte sent to IO Port
   switch (p) {
@@ -371,6 +446,10 @@ void portOut(uint8_t p, uint8_t v) {
   }
 }
 
+
+//*********************************************************************************************
+//****                  Read serial input character into buffer task                       ****
+//*********************************************************************************************
 void serialTask( void * parameter ) {
   for (;;) {
     //if (Serial.available()) {
@@ -386,7 +465,9 @@ void serialTask( void * parameter ) {
   }
 }
 
-
+//*********************************************************************************************
+//****                             Z80 input port handler                                  ****
+//*********************************************************************************************
 uint8_t portIn(uint8_t p) {
   switch (p) {
     case GPP:        //Read GPIO port if Direction be is 0 (Input)
@@ -425,6 +506,9 @@ uint8_t portIn(uint8_t p) {
 }
 
 
+//*********************************************************************************************
+//****                             Print SD card directory                                 ****
+//*********************************************************************************************
 bool  SDprintDir(fs::FS & fs) {                                     // Show files in /download
   //File dir = SD.open(sddir, FILE_READ);
   File dir = fs.open(sddir, FILE_READ);
@@ -464,6 +548,9 @@ bool  SDprintDir(fs::FS & fs) {                                     // Show file
   dir.close();
 }
 
+//*********************************************************************************************
+//****                                 Set SD card path                                    ****
+//*********************************************************************************************
 bool  SDsetPath(fs::FS & fs) {                      // Set SD Card path for file download
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];       // Get buffer address as this contains the path
 
@@ -490,7 +577,9 @@ bool  SDsetPath(fs::FS & fs) {                      // Set SD Card path for file
   return (true);
 }
 
-
+//*********************************************************************************************
+//****                              Open file on SD card                                   ****
+//*********************************************************************************************
 void SDfileOpen(fs::FS & fs) {
   uint16_t sdbuffer;
   sdbuffer = pOut[DPARM + 1] << 8 | pOut[DPARM];       // Get buffer address
@@ -522,6 +611,9 @@ void SDfileOpen(fs::FS & fs) {
   RAM[sdbuffer]     = blocks & 0xff;                      // Write the number of blocks to the buffer
 }
 
+//*********************************************************************************************
+//****           Read SD card file to Z80 memory for sdcopy.com                            ****
+//*********************************************************************************************
 bool SDfileRead(fs::FS & fs) {                            // Read block from file command
   int s = pOut[DPARM + 3] << 8 | pOut[DPARM + 2];         // Block Number
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];             // Get buffer address
@@ -545,6 +637,9 @@ bool SDfileRead(fs::FS & fs) {                            // Read block from fil
   return (true);
 }
 
+//*********************************************************************************************
+//****                       Z80 Virtual disk write function                               ****
+//*********************************************************************************************
 bool diskWrite(fs::FS & fs) {
   digitalWrite(LED_BUILTIN, HIGH);
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
@@ -570,7 +665,9 @@ bool diskWrite(fs::FS & fs) {
   return (true);
 }
 
-
+//*********************************************************************************************
+//****                       Z80 Virtual disk read function                               ****
+//*********************************************************************************************
 bool diskRead(fs::FS & fs) {
   digitalWrite(LED_BUILTIN, HIGH);
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
@@ -606,7 +703,9 @@ bool diskRead(fs::FS & fs) {
 }
 
 
-
+//*********************************************************************************************
+//****                load boot file from SD Card or SPIFFS into RAM                       ****
+//*********************************************************************************************
 //Read file from SD Card or SPIFFS into RAM
 void FileToRAM(char c[], uint16_t l, bool sd) {
   digitalWrite(LED_BUILTIN, HIGH);
@@ -631,7 +730,9 @@ void FileToRAM(char c[], uint16_t l, bool sd) {
 
 
 
-
+//*********************************************************************************************
+//****                        HEX Dump 256 byte block of RAM                               ****
+//*********************************************************************************************
 void dumpRAM(uint16_t s) {
   uint8_t i, ii;
   for (i = 0; i < 16; i++) {
@@ -643,6 +744,9 @@ void dumpRAM(uint16_t s) {
   }
 }
 
+//*********************************************************************************************
+//****                       Dump Z80 Register for Breakpoint                              ****
+//*********************************************************************************************
 void dumpReg(void) {
   bitWrite(Fl, 7 , Sf);
   bitWrite(Fl, 6 , Zf);
@@ -661,7 +765,9 @@ void dumpReg(void) {
   Serial.printf("S:%1d  Z:%1d  H:%1d  P/V:%1d  N:%1d  C:%1d\n\r", Sf, Zf, Hf, Pf, Nf, Cf);
 }
 
-
+//*********************************************************************************************
+//****                      Z80 Subtract routine and set flags                             ****
+//*********************************************************************************************
 uint8_t SUB8(uint8_t a, uint8_t v, bool c) {
   uint16_t vv;
   vv = a - (v + c);
@@ -683,6 +789,9 @@ uint8_t SUB8(uint8_t a, uint8_t v, bool c) {
   return (a);
 }
 
+//*********************************************************************************************
+//****                         Z80 Add routine and set flags                               ****
+//*********************************************************************************************
 uint8_t ADD8(uint8_t a, uint8_t v, bool c) {
   if ((a & 0x0f) == 0x0f) Hf = true;          //Not 100% correct but hopefully near enough
   uint16_t vv, vc, ra;
@@ -715,6 +824,9 @@ uint8_t ADD8(uint8_t a, uint8_t v, bool c) {
   return (ra);
 }
 
+//*********************************************************************************************
+//****                        Z80 process instruction emulator                             ****
+//*********************************************************************************************
 void cpu(void) {
   OC = RAM[PC];                 //Get Opcode
   PC++;                         //Increment Program counter
