@@ -3,9 +3,9 @@
 This is very much a work in progress however Nascom Basic and CP/M 2.2 do run quite well.
 It's not pretty but it does work !!
 
-On a techincal note the serial receive code has been put in a seprate task on the ESP32 the reason is just that checking for a recived character really slows down the emulator so this has been relegated to a task running on Core 0 of the ESP so it doesn't impact the main emulator code running on Core 1.
+On a techincal note the serial receive code has been put in a separate task on the ESP32 the reason is that just checking for a received character really slows down the emulator so this has been relegated to a task running on Core 0 of the ESP so it doesn't impact the main emulator code running on Core 1.
 
-The ESP32 code is configured for a Lilygo TTGO-T2 board with integrated SD card reader although this can be used on most ESP32 Dev boards however it may be necessary to re-confiure the SPI ports for the SD card and also the GPIO Pins assigned to Z80 GPIO Ports and breakpoint switches.
+The ESP32 code is configured for a Lilygo TTGO-T1 board with integrated SD card reader although this can be used on most ESP32 Dev boards however it may be necessary to re-confiure the SPI ports for the SD card and also the GPIO Pins assigned to Z80 GPIO Ports and breakpoint switches.
 
 The emulator handles all the original 8080 derived Z80 instruction and also implements some of the additional Z80 instructions, enough to get Nascom basic and CP/M running although BBC Basic doesn't currently run under CP/M however mbasic does. For those interrested in retro games Zork runs fine.
 
