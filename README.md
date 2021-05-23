@@ -7,15 +7,17 @@ On a techincal note the serial receive code has been put in a separate task on t
 
 The ESP32 code is configured for a Lilygo TTGO-T1 board with integrated SD card reader although this should run on most ESP32 Dev boards however it may be necessary to re-confiure the SPI ports for the SD card and also the GPIO Pins assigned to Z80 GPIO Ports and breakpoint switches.
 
-The emulator handles all the original 8080 derived Z80 instruction and also implements some of the additional Z80 instructions, all in all over 350 instructions, enough to get Nascom basic and CP/M running although BBC Basic doesn't currently run under CP/M however mbasic does. For those interrested in retro games Zork runs fine.
+The emulator handles all the original 8080 derived Z80 instructions and also implements some of the additional Z80 instructions, all in all over 350 instructions, enough to get Nascom basic and CP/M running although BBC Basic doesn't currently run under CP/M however mbasic does. For those interrested in retro games Zork also runs fine.
 
-The system boots from either SD Card or SPIFFS and initially looks for a file boot.txt on the SD card this is a simple text file that lists the rom images and the address in Hex to where they should be loaded. if no SD card is found then boot.txt is read from SPIFFS. Although it would be possible to put the CP/M ROM images on SPIFFS there would be insufficient space for a disk image and this would not be recomended for wear reasons on SPIFFS and anyway the virtual disk controller is only configured for SD cards.
+I haven't had time to perform benchmarks but comparing it to a homemade Z80 SBC running at 12Mhz it seems very comparable in it's performance.
+
+The system boots from either SD Card or SPIFFS and initially looks for a file boot.txt on the SD card this is a simple text file that lists the rom images and the address in Hex to where they should be loaded. if no SD card is found then boot.txt is read from SPIFFS. Although it would be possible to put the CP/M ROM images on SPIFFS there would be insufficient space for a disk image and this would not be recommended for wear reasons on SPIFFS, and anyway the virtual disk controller is only configured for SD cards.
 
 This version of CP/M can address 16 disks A - P of 8.4MB, each disk is held as a single file on the SD card in the /disks folder i.e. A.dsk, B.dsk...... P.dsk.
 I've only included one disk image bit this can be cloned; format.com will erase any disk.
 
 
-Additional CP'M utilities are provided:
+Additional CP/M utilities are provided:
 
 sdfies.com  - Lists files in the current SD card directory, defaults to /downloads
 
