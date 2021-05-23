@@ -222,21 +222,21 @@ void setup() {
 
 
   PC = 0;                         //Set program counter
-  BP = 0x0000;                    //Set initial breakpoint
-  BPmode = 0;                     //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
 
 
   if (digitalRead(sw1) == 0) {
+    BP = 0x0000;                    //Set initial breakpoint
+    BPmode = 0;                     //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
     Serial.println("Breakpoints enabled");
     Serial.print("\n\rEnter Breakpoint address in HEX: ");
     BP = hexToDec(getInput());
     if (BP > 0xffff) BP = 0xffff;
-    Serial.printf("\n\rBreakpoint set to: %.4X\n\r",BP);
+    Serial.printf("\n\rBreakpoint set to: %.4X\n\r", BP);
     Serial.print("\n\rEnter Breakpoint mode: ");
     BPmode = getInput().toInt();
     if (BPmode > 2) BPmode = 2;
     if (BPmode < 0) BPmode = 0;
-    Serial.printf("\n\rBreakpoint mode set to: %1d\n\r",BPmode);
+    Serial.printf("\n\rBreakpoint mode set to: %1d\n\r", BPmode);
     Serial.println("Press STEP button to start");
     while (digitalRead(sw2) == 1);
     delay(100);
@@ -244,9 +244,9 @@ void setup() {
     delay(100);
     Serial.println("\n\rStarting Z80 with breakpoints enabled\n\r");
 
-//*********************************************************************************************
-//****                    main Z80 emulation loop with breakpoints                         ****
-//*********************************************************************************************  
+    //*********************************************************************************************
+    //****                    main Z80 emulation loop with breakpoints                         ****
+    //*********************************************************************************************
     //Main loop in breakpoint mode, runs about 50% slower than normal mode
     while (1) {
       //Single Step and breakpoint logic
@@ -274,9 +274,9 @@ void setup() {
     }
   } else {
 
-//*********************************************************************************************
-//****                           main Z80 emulation loop                                   ****
-//*********************************************************************************************    
+    //*********************************************************************************************
+    //****                           main Z80 emulation loop                                   ****
+    //*********************************************************************************************
     //Main loop in normal mode
     Serial.println("\n\rStarting Z80\n\r");
     while (1) cpu();                             //Execute next instruction
@@ -306,7 +306,7 @@ String getInput() {
   bool gotS = false;
   String rs = "";
   char received;
-  
+
 
   while (gotS == false ) {
     while (Serial.available() > 0)
@@ -320,7 +320,7 @@ String getInput() {
       }
     }
   }
- 
+
   return (rs);
 }
 
