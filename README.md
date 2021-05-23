@@ -7,7 +7,7 @@ On a techincal note the serial receive code has been put in a separate task on t
 
 The ESP32 code is configured for a Lilygo TTGO-T1 board with integrated SD card reader although this should run on most ESP32 Dev boards however it may be necessary to re-confiure the SPI ports for the SD card and also the GPIO Pins assigned to Z80 GPIO Ports and breakpoint switches.
 
-The emulator handles all the original 8080 derived Z80 instruction and also implements some of the additional Z80 instructions, all in over 350 instruction, enough to get Nascom basic and CP/M running although BBC Basic doesn't currently run under CP/M however mbasic does. For those interrested in retro games Zork runs fine.
+The emulator handles all the original 8080 derived Z80 instruction and also implements some of the additional Z80 instructions, all in all over 350 instructions, enough to get Nascom basic and CP/M running although BBC Basic doesn't currently run under CP/M however mbasic does. For those interrested in retro games Zork runs fine.
 
 The system boots from either SD Card or SPIFFS and initially looks for a file boot.txt on the SD card this is a simple text file that lists the rom images and the address in Hex to where they should be loaded. if no SD card is found then boot.txt is read from SPIFFS. Although it would be possible to put the CP/M ROM images on SPIFFS there would be insufficient space for a disk image and this would not be recomended for wear reasons on SPIFFS and anyway the virtual disk controller is only configured for SD cards.
 
@@ -29,11 +29,13 @@ Switch one should be a normally off toggle switch and when closed enables single
 The variable BP sets the breakpoint address.
 
 The variable BPMode sets the Breakpoint action:
-Mode 0 - Halt immediatlye and single setp
-Mode 1 - Halt and breakpoint and single setp thereafter
-Mode 2 - Steop each time the breakpoint is reached
+Mode 0 - Halt immediately and single step thereafter until switch one is turned off
+Mode 1 - Halt at breakpoint and single step thereafter
+Mode 2 - Stop each time the breakpoint is reached
 
-If switch one is on when the ESP32 starts then breakpoint mode is enabled, note that this slows the emulator down by around 50%. Pressing switch 2 will start the Z80 allowing you to turn switch one off if you don't want the CPU stop at the first breakpoint straight away.
+Whenver the Z80 stops an a breakpoint all registers are dumped to the console along with the next 4 bytes of code and the top stack entry.
+
+If switch one is on when the ESP32 starts then breakpoint mode is enabled, note that this slows the emulator down by around 50%. Pressing switch 2 will start the Z80 allowing you to turn switch one off if you don't want the CPU to stop at the first breakpoint straight away.
 I will probably update the emulator to ask for the breakpoint address and mode interactively on the console in future versions.
 
 The emulator has a virtual 6850 UART that has a base address of 0x80 the baud rate is fixed by the emulator sofware as is configure for 115200 baud.
