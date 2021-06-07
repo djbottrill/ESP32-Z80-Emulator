@@ -1,5 +1,11 @@
 # ESP32-Z80-Emulator
 
+7th June 2021
+Fixed nasty bug that affected multiplication in MBASIC and the ability to enter commands in Zork. Add, subtract, compare and DAA instructions have been improved.
+Now supports the TTGO T2 board with colour OLED the display currently implements RED and Green 'virtual'LEDs to show the bit status of both GPIO ports and a blue 'virtual' LED to indicate disc activity.
+
+
+
 This is very much a work in progress however Nascom Basic and CP/M 2.2 do run quite well.
 It's not pretty but it does work !!
 
