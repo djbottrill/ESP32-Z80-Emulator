@@ -2,13 +2,15 @@
 #include <SPI.h>
 #include <SD.h>
 #include "SPIFFS.h"
+
+#define T2
+
+#ifdef T1
+//TTGO-T1
 #define SS    13
 #define MOSI  15
 #define MISO  2
 #define SCK   14
-
-bool debug = false;
-int debug_delay = 500;
 
 //Virtual GPIO Port A
 #define PA0 32
@@ -27,6 +29,45 @@ int debug_delay = 500;
 //BreakPoint switches
 #define sw1 4                   //Breakpoints on / Off
 #define sw2 0                   //Single Step push button
+#endif
+
+#ifdef T2
+//TTGO-T2
+#include "ESP32_SSD1331.h"
+
+const uint8_t SCLK_OLED =  14;    //SCLK
+const uint8_t MOSI_OLED =  13;    //MOSI (Master Output Slave Input)
+const uint8_t MISO_OLED =  12;    //MISO (Master Input Slave Output)
+const uint8_t CS_OLED = 15;       //OLED CS
+const uint8_t DC_OLED =  16;      //OLED DC(Data/Command)
+const uint8_t RST_OLED =  4;      //OLED Reset
+
+ESP32_SSD1331 ssd1331(SCLK_OLED, MISO_OLED, MOSI_OLED, CS_OLED, DC_OLED, RST_OLED);
+
+//SD Card SPI Pins
+#define SS    05
+#define MOSI  23
+#define MISO  19
+#define SCK   18
+
+//Virtual GPIO Port A
+#define PA0 34
+#define PA1 32
+#define PA2 33
+#define PA3 25
+#define PA4 26
+#define PA5 27
+#define PA6 12
+#define PA7 17
+
+//Virtual GPIO Port B
+#define PB0 21
+#define PB1 22
+
+//BreakPoint switches
+#define sw1 2                   //Breakpoints on / Off
+#define sw2 0                   //Single Step push button
+#endif
 
 //Virtual GPIO Port
 const uint8_t GPP = 0;
@@ -81,24 +122,28 @@ uint8_t JR;                     //Signed relative jump
 uint8_t V8;                     //8 Bit operand temp storge
 uint16_t V16;                   //16 Bit operand temp storge
 uint16_t V16a;                  //16 Bit operand temp storge
-uint32_t V32;                   //32 Bit operand temp storage user for 16 bit addition and subration
+uint32_t V32;                   //32 Bit operand temp storage used for 16 bit addition and subration
 uint8_t v1;                     //Temporary storage
 uint8_t v2;                     //Temporary storage
 bool cfs;                       //Temp carry flag storage
+bool dled;                      //Disk activity flag
 
 uint8_t RAM[65536] = {};        //RAM
 uint8_t pOut[256];              //Output port buffer
-uint8_t pIn[256];               //Output port buffer
+uint8_t pIn[256];               //Input port buffer
 uint8_t rxBuf[256];             //Serial receive buffer
-uint8_t rxInPtr;                //Serial buffer input pointer
-uint8_t rxOutPtr;               //Serial buffer output pointer
+uint8_t rxInPtr;                //Serial receive buffer input pointer
+uint8_t rxOutPtr;               //Serial receive buffer output pointer
+//uint8_t txBuf[256];             //Serial transmit buffer
+//uint8_t txInPtr;                //Serial transmit buffer input pointer
+//uint8_t txOutPtr;               //Serial transmit buffer output pointer
 
 int vdrive;                     //Virtual drive number
 char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
-TaskHandle_t Task1;             //Task handle
+TaskHandle_t Task1, Task2;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
 
 
@@ -123,7 +168,7 @@ void setup() {
 
   //Initialise virtual GPIO ports
   Serial.println("Initialising Z80 Virtual GPIO Port");
-  portOut(GPP  , 0) ;                        //Port 0 GPIO  A 0 - 7 off
+  portOut(GPP  , 0) ;                        //Port 0 GPIO A 0 - 7 off
   portOut(GPP + 1, 255) ;                    //Port 1 GPIO A 0 - 7 Outputs
   portOut(GPP + 2, 0) ;                      //Port 0 GPIO B 1 & 1 off
   portOut(GPP + 3, 255) ;                    //Port 1 GPIO B 0 & 1 Outputs
@@ -147,8 +192,26 @@ void setup() {
 
   delay(500);  // needed to start-up task1
 
+#ifdef T2
+  //Start the OLED task
+  baton = xSemaphoreCreateMutex();
+
+  xTaskCreatePinnedToCore(
+    OLEDTask,
+    "OLEDTask",
+    3000,
+    NULL,
+    1,
+    &Task2,
+    0);       // Core 0
+
+  delay(500);  // needed to start-up task1
+#endif
+
+
   Serial.println("Initialising Z80 Virtual Disk Controller");
-  if (!SD.begin()) {
+  SPI.begin(SCK, MISO, MOSI, SS);
+  if (!SD.begin(SS)) {
     Serial.println("SD Card Mount Failed");
     sdfound = false;
   }
@@ -222,7 +285,6 @@ void setup() {
 
 
   PC = 0;                         //Set program counter
-
 
   if (digitalRead(sw1) == 0) {
     BP = 0x0000;                    //Set initial breakpoint
@@ -383,8 +445,8 @@ void calcP(uint8_t v) {                 //Calc Parity and set flag
 void portOut(uint8_t p, uint8_t v) {
   pOut[p] = v;                     //Save a copy of byte sent to IO Port
   switch (p) {
-    case GPP:                                     //Write to GPIO Port
-      pIn[GPP] = v;                            //Copy to read buffer so it can be read.
+    case GPP:                                 //Write to GPIO Port
+      pIn[GPP] = v;                           //Copy to read buffer so it can be read.
       digitalWrite(PA0, bitRead(v, 0));
       digitalWrite(PA1, bitRead(v, 1));
       digitalWrite(PA2, bitRead(v, 2));
@@ -394,8 +456,8 @@ void portOut(uint8_t p, uint8_t v) {
       digitalWrite(PA6, bitRead(v, 6));
       digitalWrite(PA7, bitRead(v, 7));
       break;
-    case GPP+1:                                //GPIO Direction Port
-      pIn[GPP + 1] = v;                        //Copy to read buffer so it can be read.
+    case GPP+1:                               //GPIO Direction Port
+      pIn[GPP + 1] = v;                       //Copy to read buffer so it can be read.
       if (bitRead(v, 0) == 1) pinMode(PA0, OUTPUT); else pinMode(PA0, INPUT_PULLUP);
       if (bitRead(v, 1) == 1) pinMode(PA1, OUTPUT); else pinMode(PA1, INPUT_PULLUP);
       if (bitRead(v, 2) == 1) pinMode(PA2, OUTPUT); else pinMode(PA2, INPUT_PULLUP);
@@ -406,17 +468,19 @@ void portOut(uint8_t p, uint8_t v) {
       if (bitRead(v, 7) == 1) pinMode(PA7, OUTPUT); else pinMode(PA7, INPUT_PULLUP);
       break;
     case GPP+2:
-      pIn[GPP + 2] = v;                        //Copy to read buffer so it can be read.
+      pIn[GPP + 2] = v;                       //Copy to read buffer so it can be read.
       digitalWrite(PB0, bitRead(v, 0));
       digitalWrite(PB1, bitRead(v, 1));
       break;
-    case GPP+3:                                //GPP Direction Port
-      pIn[GPP + 3] = v;                        //Copy to read buffer so it can be read.
+    case GPP+3:                               //GPP Direction Port
+      pIn[GPP + 3] = v;                       //Copy to read buffer so it can be read.
       if (bitRead(v, 0) == 1) pinMode(PB0, OUTPUT); else pinMode(PB0, INPUT_PULLUP);
       if (bitRead(v, 1) == 1) pinMode(PB1, OUTPUT); else pinMode(PB1, INPUT_PULLUP);
       break;
-    case UART_PORT:                             //UART Write
-      Serial.write(v);                          //Send Char
+    case UART_PORT:                           //UART Write
+      Serial.write(v);                        //Send Char
+      //txBuf[txInPtr] = v;                   //Write char to output buffer
+      //txInPtr++;
       bitWrite(pIn[UART_LSR], 6, 1);            //Set bit to indicate sent
       break;
 
@@ -452,18 +516,171 @@ void portOut(uint8_t p, uint8_t v) {
 //*********************************************************************************************
 void serialTask( void * parameter ) {
   for (;;) {
-    //if (Serial.available()) {
-    //  rxBuf[rxInPtr] = Serial.read();           //Store received char in buffer
-    //  rxInPtr++;                                //Inc pointer
-    //}
+    // Check for Received chars
     int c = Serial.read();
     if (c >= 0) {
       rxBuf[rxInPtr] = c;
       rxInPtr++;
     }
+    //Check for chars to be sent
+    //if (txOutPtr != txInPtr) {             //Have we received any chars?
+    //  Serial.write(txBuf[txOutPtr]);       //Send char to console
+    //  txOutPtr++;                          //Inc Output buffer pointer
+    //}
+
     delay(5);
   }
 }
+
+#ifdef T2
+//*********************************************************************************************
+//****                            OLED display task                                        ****
+//*********************************************************************************************
+void OLEDTask( void * parameter ) {
+  ssd1331.SSD1331_Init();
+  ssd1331.Display_Clear(0, 0, 95, 63);
+  ssd1331.CommandWrite(0xA0); //Remap & Color Depth setting　
+  ssd1331.CommandWrite(0b00110010); //A[7:6] = 00; 256 color.
+  ssd1331.CommandWrite(0xAF); //Set Display On
+
+  uint8_t oled1, oled2;
+  bool dledO;
+  for (;;) {
+
+    if (oled1 != pOut[0]) {
+      if (bitRead(oled1, 0) != bitRead(pOut[0], 0)) {
+        if (bitRead(pOut[0], 0) == true) {
+          ssd1331.Drawing_Circle_Fill(90, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(90, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 1) != bitRead(pOut[0], 1)) {
+        if (bitRead(pOut[0], 1) == true) {
+          ssd1331.Drawing_Circle_Fill(78, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(78, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 2) != bitRead(pOut[0], 2)) {
+        if (bitRead(pOut[0], 2) == true) {
+          ssd1331.Drawing_Circle_Fill(66, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(66, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 3) != bitRead(pOut[0], 3)) {
+        if (bitRead(pOut[0], 3) == true) {
+          ssd1331.Drawing_Circle_Fill(54, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(54, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 4) != bitRead(pOut[0], 4)) {
+        if (bitRead(pOut[0], 4) == true) {
+          ssd1331.Drawing_Circle_Fill(42, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(42, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 5) != bitRead(pOut[0], 5)) {
+        if (bitRead(pOut[0], 5) == true) {
+          ssd1331.Drawing_Circle_Fill(30, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(30, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 6) != bitRead(pOut[0], 6)) {
+        if (bitRead(pOut[0], 6) == true) {
+          ssd1331.Drawing_Circle_Fill(18, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(18, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled1, 7) != bitRead(pOut[0], 7)) {
+        if (bitRead(pOut[0], 7) == true) {
+          ssd1331.Drawing_Circle_Fill(6, 20, 4, 31, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(6, 20, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      oled1 =  pOut[0];
+    }
+    if (oled2 != pOut[2]) {
+      if (bitRead(oled2, 0) != bitRead(pOut[2], 0)) {
+        if (bitRead(pOut[2], 0) == true) {
+          ssd1331.Drawing_Circle_Fill(90, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(90, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 1) != bitRead(pOut[2], 1)) {
+        if (bitRead(pOut[2], 1) == true) {
+          ssd1331.Drawing_Circle_Fill(78, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(78, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+
+
+      if (bitRead(oled2, 2) != bitRead(pOut[2], 2)) {
+        if (bitRead(pOut[2], 2) == true) {
+          ssd1331.Drawing_Circle_Fill(66, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(66, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 3) != bitRead(pOut[2], 3)) {
+        if (bitRead(pOut[2], 3) == true) {
+          ssd1331.Drawing_Circle_Fill(54, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(54, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 4) != bitRead(pOut[2], 4)) {
+        if (bitRead(pOut[2], 4) == true) {
+          ssd1331.Drawing_Circle_Fill(42, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(42, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 5) != bitRead(pOut[2], 5)) {
+        if (bitRead(pOut[2], 5) == true) {
+          ssd1331.Drawing_Circle_Fill(30, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(30, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 6) != bitRead(pOut[2], 6)) {
+        if (bitRead(pOut[2], 6) == true) {
+          ssd1331.Drawing_Circle_Fill(18, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(18, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      if (bitRead(oled2, 7) != bitRead(pOut[2], 7)) {
+        if (bitRead(pOut[2], 7) == true) {
+          ssd1331.Drawing_Circle_Fill(6, 42, 4, 0, 31, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        } else {
+          ssd1331.Drawing_Circle_Fill(6, 42, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+        }
+      }
+      oled2 =  pOut[02];
+    }
+
+    if (dled != dledO) {
+      dledO = dled;
+      if (dled == true) {
+        ssd1331.Drawing_Circle_Fill(6, 58, 4, 0, 0, 31); //Red(0-31), Green(0-63), Blue(0-31);
+      } else {
+        ssd1331.Drawing_Circle_Fill(6, 58, 4, 0, 0, 0); //Red(0-31), Green(0-63), Blue(0-31);
+      }
+    }
+
+    delay(5);
+  }
+}
+#endif
 
 //*********************************************************************************************
 //****                             Z80 input port handler                                  ****
@@ -510,9 +727,7 @@ uint8_t portIn(uint8_t p) {
 //****                             Print SD card directory                                 ****
 //*********************************************************************************************
 bool  SDprintDir(fs::FS & fs) {                                     // Show files in /download
-  //File dir = SD.open(sddir, FILE_READ);
   File dir = fs.open(sddir, FILE_READ);
-
   dir.rewindDirectory();
   int cols = 0;
   Serial.println(sddir);
@@ -522,7 +737,6 @@ bool  SDprintDir(fs::FS & fs) {                                     // Show file
       // no more files
       break;
     }
-
     String st = entry.name();
     if (st.charAt(0) != '_') {                            // Skip deleted files
       Serial.print(st);
@@ -553,7 +767,6 @@ bool  SDprintDir(fs::FS & fs) {                                     // Show file
 //*********************************************************************************************
 bool  SDsetPath(fs::FS & fs) {                      // Set SD Card path for file download
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];       // Get buffer address as this contains the path
-
   int l = RAM[a];                                   // The first byte in the buffer contains the byte count
   int i;
   int j = 0;
@@ -564,14 +777,14 @@ bool  SDsetPath(fs::FS & fs) {                      // Set SD Card path for file
   }
   Serial.print("New Path: ");
   Serial.println(d);
-  //File dir = SD.open(d);                            // Check if path is valid
-  File dir = fs.open(d, FILE_READ);                    // Check if path is valid
+  //File dir = SD.open(d);                          // Check if path is valid
+  File dir = fs.open(d, FILE_READ);                 // Check if path is valid
   if (!dir) {
     Serial.println("Invalid path");
     return (false);
   }
   dir.close();
-  for (i = 0 ; i < 50; i++) sddir[i] = d[i];          // Copy path to global variable
+  for (i = 0 ; i < 50; i++) sddir[i] = d[i];        // Copy path to global variable
   Serial.print("Setting SD Card path to: ");
   Serial.println(sddir);
   return (true);
@@ -582,14 +795,14 @@ bool  SDsetPath(fs::FS & fs) {                      // Set SD Card path for file
 //*********************************************************************************************
 void SDfileOpen(fs::FS & fs) {
   uint16_t sdbuffer;
-  sdbuffer = pOut[DPARM + 1] << 8 | pOut[DPARM];       // Get buffer address
+  sdbuffer = pOut[DPARM + 1] << 8 | pOut[DPARM];      // Get buffer address
   int n;
   int nn;
   for (nn = 0 ; nn < 50 ; nn++) {
-    sdfile[nn] = sddir[nn];                               // Get current directory
-    if (sddir[nn] == 0) break;                            // Null so end of string
+    sdfile[nn] = sddir[nn];                           // Get current directory
+    if (sddir[nn] == 0) break;                        // Null so end of string
   }
-  sdfile[nn] = '/';                                        // append a /
+  sdfile[nn] = '/';                                   // append a /
   nn++;
 
   for (n = 0; n < 12; n++) sdfile[n + nn] = pOut[DPARM + n + 2];  // Append filename
@@ -600,15 +813,15 @@ void SDfileOpen(fs::FS & fs) {
   if (!f) {
     Serial.println("file open failed");
   } else {
-    blocks = f.size() / 128;                              // Calculate the number of 128 byte blocks
-    if ((f.size() % 128) > 0) blocks++;                   // Round up if not an exact number of 128 byte blocks
+    blocks = f.size() / 128;                          // Calculate the number of 128 byte blocks
+    if ((f.size() % 128) > 0) blocks++;               // Round up if not an exact number of 128 byte blocks
     Serial.printf("%7d Bytes %5d Block(s)", f.size(), blocks);
   }
   Serial.println();
   f.close();
 
   RAM[sdbuffer + 1] = blocks >> 8;
-  RAM[sdbuffer]     = blocks & 0xff;                      // Write the number of blocks to the buffer
+  RAM[sdbuffer]     = blocks & 0xff;                  // Write the number of blocks to the buffer
 }
 
 //*********************************************************************************************
@@ -617,7 +830,8 @@ void SDfileOpen(fs::FS & fs) {
 bool SDfileRead(fs::FS & fs) {                            // Read block from file command
   int s = pOut[DPARM + 3] << 8 | pOut[DPARM + 2];         // Block Number
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];             // Get buffer address
-  //File f = SD.open(sdfile);
+  digitalWrite(LED_BUILTIN, HIGH);
+  dled = true;
   File f = fs.open(sdfile, FILE_READ);
   if (!f) {
     Serial.println("file open failed");
@@ -634,6 +848,8 @@ bool SDfileRead(fs::FS & fs) {                            // Read block from fil
     }
   }
   f.close();
+  digitalWrite(LED_BUILTIN, LOW);
+  dled = false;
   return (true);
 }
 
@@ -642,13 +858,13 @@ bool SDfileRead(fs::FS & fs) {                            // Read block from fil
 //*********************************************************************************************
 bool diskWrite(fs::FS & fs) {
   digitalWrite(LED_BUILTIN, HIGH);
+  dled = true;
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
   uint16_t a = pOut[DPARM + 1] << 8 | pOut[DPARM];
   vdrive = s >> 14;
   s = s & 0x3fff;
   char dd[] = "/disks/A.dsk";
   dd[7] = vdrive + 65;
-  //File f = SD.open(dd, FILE_APPEND);
   File f = fs.open(dd, "r+w+");
   if (!f) {
     Serial.println("Virtual Disk file open failed");
@@ -657,11 +873,11 @@ bool diskWrite(fs::FS & fs) {
   f.seek(s * 512);                                          // Seek to first byte of sector
   //16 Disks with 512 tracks, 128 Sectors per track, 128 byte per sector
   for (int i = 0 ; i < 512 ; i++) {
-    //f.write(secBuf[i]);
     f.write(RAM[a + i]);
   }
   f.close();
   digitalWrite(LED_BUILTIN, LOW);
+  dled = false;
   return (true);
 }
 
@@ -670,6 +886,7 @@ bool diskWrite(fs::FS & fs) {
 //*********************************************************************************************
 bool diskRead(fs::FS & fs) {
   digitalWrite(LED_BUILTIN, HIGH);
+  dled = true;
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
   uint16_t a = pOut[DPARM + 1] << 8 | pOut[DPARM];
   // Memory Address, Page bit, Disk Drive, Sector
@@ -686,19 +903,11 @@ bool diskRead(fs::FS & fs) {
   f.seek(s * 512);                                         // Seek to first byte of sector
   //16 Disks with 512 tracks, 128 Sectors per track, 128 byte per sector
   for (int i = 0 ; i < 512 ; i++) {
-    //secBuf[i] = f.read();
     RAM[a + i] = f.read();
   }
   f.close();
-  //for (int i = 0 ; i < 512 ; i++) {
-  //  RAM[a + i] = secBuf[i];
-  //}
   digitalWrite(LED_BUILTIN, LOW);
-  //Serial.printf("Read Sector Buffer: %d Drive: %s\n\r", s, dd);
-  //dumpRAM(a);
-  //dumpRAM(a+256);
-  digitalWrite(LED_BUILTIN, LOW);
-  return (true);
+  dled = false;
   return (true);
 }
 
@@ -709,6 +918,7 @@ bool diskRead(fs::FS & fs) {
 //Read file from SD Card or SPIFFS into RAM
 void FileToRAM(char c[], uint16_t l, bool sd) {
   digitalWrite(LED_BUILTIN, HIGH);
+  dled = true;
   Serial.printf("Loading: %s at 0x%04x ", c, l);
   File f;
   if (sd == true) {
@@ -726,6 +936,7 @@ void FileToRAM(char c[], uint16_t l, bool sd) {
   Serial.println("Done");
   f.close();
   digitalWrite(LED_BUILTIN, LOW);
+  dled = false;
 }
 
 
@@ -754,50 +965,51 @@ void dumpReg(void) {
   bitWrite(Fl, 2 , Pf);
   bitWrite(Fl, 1 , Nf);
   bitWrite(Fl, 0 , Cf);
+  V16 = RAM[PC +1] + 256 * RAM[PC +2];      //Get the 16 bit operand
   Serial.println();
-  Serial.printf("PC: %.4X  %.2X %.2X %.2X %.2x\n\r", PC, RAM[PC], RAM[PC + 1], RAM[PC + 2], RAM[PC + 3]);
+  Serial.printf("PC: %.4X  %.2X %.2X %.2X (%.2X)\n\r", PC, RAM[PC], RAM[PC + 1], RAM[PC + 2], RAM[V16] );
   Serial.printf("AF: %.2X %.2X\t\tAF': %.2X %.2X \n\r", A, Fl, Aa, Fla);
-  Serial.printf("BC: %.2X %.2X\t\tBC': %.2X %.2X \n\r", B, C, Ba, Ca);
-  Serial.printf("DE: %.2X %.2X\t\tDE': %.2X %.2X \n\r", D, E, Da, Ca);
-  Serial.printf("HL: %.2X %.2X\t\tHL': %.2X %.2X \n\r", H, L, Ha, La);
+  Serial.printf("BC: %.2X %.2X (%.2X)\t\tBC': %.2X %.2X \n\r", B, C, RAM[(B*256)+C], Ba, Ca);
+  Serial.printf("DE: %.2X %.2X (%.2X)\t\tDE': %.2X %.2X \n\r", D, E, RAM[(D*256)+E], Da, Ca);
+  Serial.printf("HL: %.2X %.2X (%.2X)\t\tHL': %.2X %.2X \n\r", H, L, RAM[(H*256)+L], Ha, La);
   Serial.printf("IX: %.4X  IY: %.4X\n\r", IX, IY);
   Serial.printf("SP: %.4X  Top entry: %.4X\n\r", SP, (RAM[SP] + (256 * RAM[SP + 1])));
   Serial.printf("S:%1d  Z:%1d  H:%1d  P/V:%1d  N:%1d  C:%1d\n\r", Sf, Zf, Hf, Pf, Nf, Cf);
 }
 
-//*********************************************************************************************
-//****                      Z80 Subtract routine and set flags                             ****
-//*********************************************************************************************
-uint8_t SUB8(uint8_t a, uint8_t v, bool c) {
-  uint16_t vv;
-  vv = a - (v + c);
-  a = vv & 0xff;
-  Cf = bitRead(vv, 8);
-  if (vv > 255) {
-    Pf = true;
-  } else {
-    Pf = false;
-  }
-  Hf = false;                //Not sure about this !!
-  if (a == 0) {
-    Zf = true;
-  } else {
-    Zf = false;
-  }
-  Nf = true;
-  Sf = bitRead(a, 7);
-  return (a);
-}
-
-//*********************************************************************************************
-//****                         Z80 Add routine and set flags                               ****
-//*********************************************************************************************
-uint8_t ADD8(uint8_t a, uint8_t v, bool c) {
-  if ((a & 0x0f) == 0x0f) Hf = true;          //Not 100% correct but hopefully near enough
+/*
+  //*********************************************************************************************
+  //****                      Z80 Subtract routine and set flags                             ****
+  //*********************************************************************************************
+  uint8_t SUB8(uint8_t a, uint8_t v, bool c) {
   uint16_t vv, vc, ra;
   bool vvp;
   vc = v + c;
-  vv = a + vc;
+  if (bitRead(a, 3) == 0 && bitRead(vc, 3) == 0) Hf = true; else Hf = false;
+  vv = a;
+  vv -= vc;
+  ra = vv & 0xff;
+  Cf = bitRead(vv, 8);
+  if (vv > 256) Pf = true; else Pf = false;
+  if (ra == 0) Zf = true; else Zf = false;
+  Nf = true;
+  Sf = bitRead(ra, 7);
+  return (ra);
+  }
+
+
+
+
+  //*********************************************************************************************
+  //****                         Z80 Add routine and set flags                               ****
+  //*********************************************************************************************
+  uint8_t ADD8(uint8_t a, uint8_t v, bool c) {
+  if (bitRead(a, 3) == 1 && bitRead(v, 3) == 1) Hf = true; else Hf = false;
+  uint16_t vv, vc, ra;
+  bool vvp;
+  vc = v + c;
+  vv = a;
+  vv += vc;
   ra = vv & 0xff;
   vvp = bitRead(a, 7) ^ bitRead(vc, 7);
   if (vvp = true) {
@@ -807,22 +1019,53 @@ uint8_t ADD8(uint8_t a, uint8_t v, bool c) {
       Pf = true;
     }
   }
-
   Cf = bitRead(vv, 8);     //Carry
-  //  if (vv > 255) {
-  //    Pf = true;
-  //  } else {
-  //    Pf = false;
-  //  }
-  if (ra == 0) {
-    Zf = true;
-  } else {
-    Zf = false;
-  }
+  if ((ra & 0xff) == 0) Zf = true; else Zf = false;
   Nf = false;
   Sf = bitRead(ra, 7);
   return (ra);
+  }
+*/
+
+
+uint8_t ADD8(uint8_t a, uint8_t b, bool c) {
+  uint8_t acc;
+  uint8_t ci, co;
+  co = b + c;
+  if (bitRead(a, 3) == 1 && bitRead(co, 3) == 1) Hf = true; else Hf = false;
+  if ( c == true) {
+    co = (a >= 0xFF - b);
+    acc = a + b + 1;
+  } else {
+    co = (a > 0xFF - b);
+    acc = a + b;
+  }
+
+  //ci = acc ^ a ^ b;
+  //ci = (ci >> 7 ) ^ co;
+  
+  ci = ((a ^ b) ^ 0x80) & 0x80;
+  if (ci){
+    ci = ((acc ^ a) & 0x80) != 0;
+  }  
+
+  Pf = bitRead(ci, 1);
+  Cf = bitRead(co, 0);
+  if (acc == 0) Zf = true; else Zf = false;
+  Nf = false;
+  Sf = bitRead(acc, 7);
+  return (acc);
 }
+
+
+uint8_t SUB8(uint8_t a, uint8_t b, bool c) {
+  uint8_t  ra;
+  ra = ADD8(a, ~b, !c);
+  Nf = true;
+  Cf = !Cf;
+  return (ra);
+}
+
 
 //*********************************************************************************************
 //****                        Z80 process instruction emulator                             ****
@@ -844,8 +1087,7 @@ void cpu(void) {
       RAM[(256 * B) + C] = A;
       break;
     case 0x03:                  //** INC BC **
-      V16 = C;
-      V16 += 256 * B;
+      V16 = (256 * B) + C;
       V16++;
       B = V16 / 256;
       C = V16 & 255;
@@ -893,9 +1135,10 @@ void cpu(void) {
     case 0x09:                  //** ADD HL, BC **
       V32 = (H * 256) + L;
       V16 = (B * 256) + C;
+      if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
       V32 += V16;
       Cf = bitRead(V32, 16);    //** Update carry flag **  *
-      H = (V32 / 256) & 0xff;
+      H = V32 >> 8  & 0xff;
       L = V32 & 0xff;
       Nf = false;               //False as it's an addition
       break;
@@ -989,9 +1232,10 @@ void cpu(void) {
     case 0x19:                  //** ADD HL, DE **
       V32 = (H * 256) + L;
       V16 = (D * 256) + E;
+      if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
       V32 += V16;
       Cf = bitRead(V32, 16);    //Update carry flag
-      H = (V32 / 256) & 0xff;
+      H = V32 >> 8 & 0xff;
       L = V32 & 0xff;
       Nf = false;               //False as it's an addition
       break;
@@ -1069,18 +1313,30 @@ void cpu(void) {
       H = get8();
       break;
     case 0x27:                  //** DAA **
-      if ((A & 0x0f) > 9 || Hf == true) A = A + 0x06;
-      if (((A & 0xf0) >> 4) > 9 || Cf == true) {
-        A = A + 0x60;
-        Cf = true;
-      } else {
-        Cf = false;
-      }
-      Zf = false;
-      if (A == 0) Zf = true;
+      uint8_t ua, la;
+      la = A & 0x0f;          //lower nibble of A
+      ua = A / 16 ;   //Upper nibble of A
+      bool br;
+      br = false;
+      if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //1
+      if (br == false && Cf == 0 && ua <  9 && Hf == 0 && la >  9) Cf = 0; A += 0x06; br = true;  //2
+      if (br == false && Cf == 0 && ua < 10 && Hf == 1 && la <  4) Cf = 0; A += 0x06; br = true;  //3
+      if (br == false && Cf == 0 && ua >  9 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //4
+      if (br == false && Cf == 0 && ua >  8 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //5
+      if (br == false && Cf == 0 && ua >  9 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //6
+      if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //7
+      if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //8
+      if (br == false && Cf == 1 && ua <  4 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //9
+      if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //10
+      if (br == false && Cf == 0 && ua <  9 && Hf == 1 && la >  5) Cf = 0; A += 0xFA; br = true;  //11
+      if (br == false && Cf == 1 && ua >  6 && Hf == 0 && la < 10) Cf = 1; A += 0xA0; br = true;  //12
+      if (br == false && Cf == 1 && ua >  5 && ua < 8 && Hf == 1 && la >  5) Cf = 1; A += 0x9A;  //13
+
+      if (A == 0) Zf = true; else Zf = false;
       calcP(A);                  //update parity flag
       Sf = bitRead(A, 7);       //Update S flag
       break;
+      
     case 0x28:                  //** JR Z value **
       JR = get8();
       if (Zf == true) {
@@ -1093,7 +1349,8 @@ void cpu(void) {
       break;
     case 0x29:                  //** ADD HL, HL **
       V32 = (H * 256) + L;
-      V32 = V32 + (H * 256) + L;            //add it again
+      if (bitRead(V32, 11) == 1) Hf = true; else Hf = false; //Half carry flag
+      V32 = V32 << 1;           //add it again
       Cf = bitRead(V32, 16);    //** Update carry flag **  *
       H = (V32 / 256) & 0xff;
       L = V32 & 0xff;
@@ -1186,14 +1443,12 @@ void cpu(void) {
       break;
     case 0x39:                  //** ADD HL, SP **
       V32 = (H * 256) + L;
+      if (bitRead(V32, 11) == 1 && bitRead(SP, 11) == 1) Hf = true; else Hf = false; //Half carry flag
       V32 += SP;
       Cf = bitRead(V32, 16);    //** Update carry flag **  *
       H = (V32 / 256) & 0xff;
       L = V32 & 0xff;
       Nf = false;               //False as it's an addition
-      Sf = bitRead(V32 , 15);      //Update S flag
-      Zf = false;
-      if ((V32 & 0xffff) == 0) Zf = true; //Set Z flag if HL = 0
       break;
     case 0x3A:                  //** LD A, (VALUE) **
       A = RAM[get16()];
@@ -1543,8 +1798,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA1:                  //** AND C **
@@ -1553,8 +1807,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA2:                  //** AND D **
@@ -1563,8 +1816,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA3:                  //** AND E **
@@ -1573,8 +1825,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA4:                  //** AND H **
@@ -1583,8 +1834,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA5:                  //** AND L **
@@ -1593,8 +1843,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA6:                  //** AND (HL) **
@@ -1603,8 +1852,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA7:                  //** AND A **
@@ -1613,8 +1861,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA8:                  //** XOR B **
@@ -1623,8 +1870,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xA9:                  //** XOR C **
@@ -1633,8 +1879,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAA:                  //** XOR D **
@@ -1643,8 +1888,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAB:                  //** XOR E **
@@ -1653,8 +1897,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAC:                  //** XOR H **
@@ -1663,8 +1906,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAD:                  //** XOR L **
@@ -1673,8 +1915,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAE:                  //** XOR (HL) **
@@ -1683,12 +1924,11 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xAF:                  //** XOR A **
-      A = 0;                    //Clears A and sets flags accordingly
+      A = 0;
       Sf = false;
       Zf = true;
       Hf = false;
@@ -1707,8 +1947,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB1:                  //** OR C **
@@ -1717,8 +1956,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB2:                  //** OR D **
@@ -1727,8 +1965,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB3:                  //** OR E **
@@ -1737,8 +1974,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB4:                  //** OR H **
@@ -1747,8 +1983,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB5:                  //** OR L **
@@ -1757,18 +1992,16 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0XB6:                  //** OR (HL) **
-      A = A | RAM[H * 256 + L];
+      A = A | RAM[(H * 256) + L];
       Cf = false;
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0XB7:                  //** OR A **
@@ -1777,8 +2010,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xB8:                  //** CP B **
@@ -1899,14 +2131,14 @@ void cpu(void) {
       break;
     case 0xCE:                  //** ADC A, value **
       V8 = get8();
-      A = ADD8(A, E, Cf);
+      A = ADD8(A, V8, Cf);
       break;
     case 0xCF:                  //** RST 08 **
       SP--;
       RAM[SP] = PC / 256;        //Push program counter onto the stack
       SP--;
       RAM[SP] = PC & 255;
-      PC = 0x08;                 //Put 0c00 in Program Counter
+      PC = 0x08;                 //Put 0x08 in Program Counter
       break;
     //********************************************
     // Instructions D0 to DF fully implemented
@@ -1957,7 +2189,7 @@ void cpu(void) {
       RAM[SP] = PC / 256;       //Push program counter onto the stack
       SP--;
       RAM[SP] = PC & 255;
-      PC = 0x10;                 //Put 0c00 in Program Counter
+      PC = 0x10;                 //Put 0x10 in Program Counter
       break;
     case 0xD8:                  //** RET C **
       if (Cf == true) {
@@ -2019,7 +2251,7 @@ void cpu(void) {
       RAM[SP] = PC / 256;        //Push program counter onto the stack
       SP--;
       RAM[SP] = PC & 255;
-      PC = 0x18;                 //Put 0c00 in Program Counter
+      PC = 0x18;                 //Put 0x18 in Program Counter
       break;
     //********************************************
     // Instructions E0 to EF fully implemented
@@ -2073,8 +2305,7 @@ void cpu(void) {
       Nf = false;
       calcP(A);
       Hf = true;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;;
       Sf = bitRead(A, 7);
       break;
     case 0xE7:                  //** RST 20 **
@@ -2082,7 +2313,7 @@ void cpu(void) {
       RAM[SP] = PC / 256;        //Push program counter onto the stack
       SP--;
       RAM[SP] = PC & 255;
-      PC = 0x20;                 //Put 0c00 in Program Counter
+      PC = 0x20;                 //Put 0x20 in Program Counter
       break;
     case 0xE8:                  //** RET PE **
       if (Pf == true) {
@@ -2128,8 +2359,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xEF:                  //** RST 28 **
@@ -2137,7 +2367,7 @@ void cpu(void) {
       RAM[SP] = PC / 256;        //Push program counter onto the stack
       SP--;
       RAM[SP] = PC & 255;
-      PC = 0x28;                 //Put 0c00 in Program Counter
+      PC = 0x28;                 //Put 0x28 in Program Counter
       break;
     //********************************************
     // Instructions F0 to FF
@@ -2198,8 +2428,7 @@ void cpu(void) {
       Nf - false;
       calcP(A);
       Hf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0xF7:                  //** RST 30 **
@@ -2302,23 +2531,15 @@ void CPU_ED(void) {
       break;
     case 0x5A:                //** ADC HL, DE **
       V32 = (H * 256) + L;
-      V16 = (D * 256) + E;
-      V32 = V32 + V16 + Cf;
+      V16 = (D * 256) + E + Cf;
+      if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false;
+      V32 += V16;
       H = (V32 / 256) & 0xff;
       L = V32 & 0xff;
       Sf = bitRead(V32, 15);
-      if ((V32 & 0xffff) == 0) {
-        Zf = true;
-      } else {
-        Zf = false;
-      }
-      if ((V32 & 0xffff0000) > 0) {
-        Pf = true;
-      } else {
-        Pf = false;
-      }
+      if ((V32 & 0xffff) == 0) Zf = true; else Zf = false;
+      if ((V32 & 0xffff0000) > 0) Pf = true; else Pf = false;
       Nf = false;
-      Hf = bitRead(V32, 12);
       Cf = bitRead(V32, 16);
       break;
     case 0x5B:              //** LD DE, (value) **
@@ -2333,7 +2554,6 @@ void CPU_ED(void) {
       portOut(C, L);
       break;
     case 0x6F:              //** RLD **
-      //Serial.printf("Before RLD %.2x %.2x \n\r", A,  RAM[(H * 256) +L]);
       V8 = A & 0xf0;                  //Preserve high nibble of A
       V16 = RAM[(H * 256) + L];       //get (HL)
       V16 = V16 << 4;                       //Shift left 4
@@ -2342,11 +2562,10 @@ void CPU_ED(void) {
       V16 = V16 >> 8;                       //Get most significant nibble
       A = V16 & 0x0f;                 //Get the new low nibble of A
       A = A + V8;                     //reassemble A
-
       Hf = false;                     //Set the flags
       Nf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      calcP(A);
+      if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       break;
     case 0x71:  //** OUT (C), 0 **
@@ -2364,6 +2583,7 @@ void CPU_ED(void) {
       portOut(C, A);
       break;
     case 0xA1:    //** CPI **
+      cfs = Cf;                 //save carry flag
       V16 = (H * 256) + L;
       SUB8(A, RAM[V16], 0);
       V16++;
@@ -2374,17 +2594,19 @@ void CPU_ED(void) {
       B = V16 / 256;
       C = V16 & 0xff;
       Nf = true;
+      Cf = cfs;               //restore carry flag
       break;
     case 0xB0:    //** LDIR **
-      uint16_t src, dst, cc;
+      uint16_t src, dst;
       V16 = (256 * B) + C;  //Byte count
       src = (256 * H) + L;  //Source
       dst = (256 * D) + E;  //Destination
-      for (cc = 0; cc < V16; cc++) {
+      do {
         RAM[dst] = RAM[src];  //copy byte
         dst++;
         src++;
-      }
+        V16--;
+      } while (V16 > 0);
       H = src / 16;
       L = src & 0x0f;
       D = dst / 16;
@@ -2392,7 +2614,7 @@ void CPU_ED(void) {
       B = 0;
       C = 0;
       Nf = false;
-      Pf = false;
+      Pf = true;
       Hf = false;
       break;
     default:
@@ -2565,6 +2787,7 @@ void CPU_CB(void) {
       if (A == 0) Zf = true; else Zf = false;
       Sf = bitRead(A, 7);
       calcP(A);
+      if (A == 0) Zf = true; else Zf = false;
       Hf = false;
       Nf = false;
       break;
@@ -2576,8 +2799,7 @@ void CPU_CB(void) {
       Nf = false;
       Hf = false;
       calcP(D);
-      Zf = false;
-      if (D == 0) Zf = true;
+      if (D == 0) Zf = true; else Zf = false;
       Sf = bitRead(D, 7);
       break;
     case 0x13:    //** RL E **
@@ -2588,8 +2810,7 @@ void CPU_CB(void) {
       Nf = false;
       Hf = false;
       calcP(E);
-      Zf = false;
-      if (E == 0) Zf = true;
+      if (E == 0) Zf = true; else Zf = false;
       Sf = bitRead(E, 7);
       break;
     case 0x3F:    //** SRL **
@@ -2598,8 +2819,7 @@ void CPU_CB(void) {
       Sf = false;
       Hf = false;
       Nf = false;
-      Zf = false;
-      if (A == 0) Zf = true;
+      if (A == 0) Zf = true; else Zf = false;
       calcP(A);
       break;
     case 0x46:    //** BIT 0, (HL) **
@@ -2700,10 +2920,19 @@ void CPU_DD(void) {
     case 0x36:   //** LD [IX+v1], v2 **
       v1 = get8();
       v2 = get8();
-      RAM[IX + v1] = v2;
+      if (v1 < 128) {
+        RAM[IX + v1] = v2;
+      } else {
+        RAM[IX - (128 - v1)] = v2;
+      }
       break;
     case 0x77:    //** LD [IX+v1], A **
-      RAM[IX + get8()] = A;
+      V8 = get8();
+      if (V8 < 128) {
+        RAM[IX + V8] = A;
+      } else {
+        RAM[IX - (128 - V8)] = A;
+      }
       break;
     case 0xe1:    //** POP IX **
       IX = RAM[SP];
@@ -2715,7 +2944,7 @@ void CPU_DD(void) {
       SP--;
       RAM[SP] = IX / 256;
       SP--;
-      RAM[SP] += IX & 0xff;
+      RAM[SP] = IX & 0xff;
       break;
     default:
       Serial.printf("Unknown OP-Code DD %.2X at %.4X\n\r", V8a, PC - 1);
@@ -2736,7 +2965,7 @@ void CPU_FD(void) {
       SP--;
       RAM[SP] = IY / 256;
       SP--;
-      RAM[SP] += IY & 0xff;
+      RAM[SP] = IY & 0xff;
       break;
     default:
       Serial.printf("Unknown OP-Code FD %.2X at %.4X\n\r", V8a, PC - 1);
