@@ -112,7 +112,7 @@ bool Hf = false;                //Half Carry flag
 bool Pf = false;                //Parity / Overflow flag
 bool Nf = false;                //Add / Subtract flag
 
-bool RUN = false;               //RUN flag
+bool RUN = true;                //RUN flag
 bool intE = false;              //Interrupt enable
 uint16_t BP = 0;                //Breakpoint
 uint8_t BPmode = 0;             //Breakpoint mode
@@ -134,14 +134,15 @@ uint8_t pIn[256];               //Input port buffer
 uint8_t rxBuf[256];             //Serial receive buffer
 uint8_t rxInPtr;                //Serial receive buffer input pointer
 uint8_t rxOutPtr;               //Serial receive buffer output pointer
-//uint8_t txBuf[256];             //Serial transmit buffer
-//uint8_t txInPtr;                //Serial transmit buffer input pointer
-//uint8_t txOutPtr;               //Serial transmit buffer output pointer
+uint8_t txBuf[256];             //Serial transmit buffer
+uint8_t txInPtr;                //Serial transmit buffer input pointer
+uint8_t txOutPtr;               //Serial transmit buffer output pointer
 
 int vdrive;                     //Virtual drive number
 char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
+
 
 TaskHandle_t Task1, Task2;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
@@ -157,7 +158,7 @@ void setup() {
   Serial.println("c");          //Send esc c to reset screen
   Serial.println("****        Shady Grove        ****");
   Serial.println("****  Z80 Emulator for ESP32   ****");
-  Serial.println("**** David Bottrill 2021  V1.2 ****");
+  Serial.println("**** David Bottrill 2021  V1.3 ****");
   Serial.println();
 
   pinMode(LED_BUILTIN, OUTPUT);   //Built in LED functions as disk active indicator
@@ -208,7 +209,6 @@ void setup() {
   delay(500);  // needed to start-up task1
 #endif
 
-
   Serial.println("Initialising Z80 Virtual Disk Controller");
   SPI.begin(SCK, MISO, MOSI, SS);
   if (!SD.begin(SS)) {
@@ -216,16 +216,144 @@ void setup() {
     sdfound = false;
   }
 
-  //Try and boot from SD Card or SPIFFS
-  File boot;
+}
 
+void loop() {
+  bootstrap();                    //Load boot images from SD Card or SPIFFS
+  PC = 0;                         //Set program counter
+  RUN = true;                     //Set RUN flag to true
+
+  //Depending if SW1 is pressed run in breakpoint mode or normal mode.
+  switch (digitalRead(sw1)) {
+    case 0:
+      BP = 0x0000;                //Set initial breakpoint
+      BPmode = 0;                 //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
+      Serial.println("Breakpoints enabled");
+      Serial.print("\n\rEnter Breakpoint address in HEX: ");
+      BP = hexToDec(getInput());
+      if (BP > 0xffff) BP = 0xffff;
+      Serial.printf("\n\rBreakpoint set to: %.4X\n\r", BP);
+      Serial.print("\n\rEnter Breakpoint mode: ");
+      BPmode = getInput().toInt();
+      if (BPmode > 2) BPmode = 2;
+      if (BPmode < 0) BPmode = 0;
+      Serial.printf("\n\rBreakpoint mode set to: %1d\n\r", BPmode);
+      Serial.println("Press STEP button to start");
+      while (digitalRead(sw2) == 1);
+      delay(100);
+      while (digitalRead(sw2) == 0);
+      delay(100);
+      Serial.println("\n\rStarting Z80 with breakpoints enabled\n\r");
+
+      //*********************************************************************************************
+      //****                    main Z80 emulation loop with breakpoints                         ****
+      //*********************************************************************************************
+      //Main loop in breakpoint mode, runs about 50% slower than normal mode
+      while (RUN) {
+        //Single Step and breakpoint logic
+        if (digitalRead(sw1) == 0) {
+          if (bpOn == false && PC == BP) bpOn = true;
+          switch (BPmode) {
+            case 0:
+              BreakPoint();    //Singe step if SW1 is on (low)
+              break;
+            case 1:
+              if (bpOn == true) BreakPoint();    //Stop once breakpoint hit
+              break;
+            case 2:
+              if (PC == BP) BreakPoint();        //Stop only at breakpoint
+              break;
+          }
+        } else {
+          //If not in single step mode then step button becomes a reset button.
+          if (digitalRead(sw2) == 0) {
+            PC = 0;
+            while (digitalRead(sw2) == 0);
+          }
+        }
+        cpu();                                    //Execute next instruction
+      }
+      break;
+
+    case 1:
+      //*********************************************************************************************
+      //****                           main Z80 emulation loop                                   ****
+      //*********************************************************************************************
+      //Main loop in normal mode
+      Serial.println("\n\rStarting Z80\n\r");
+      while (cpu());                          //Execute next instruction
+      break;
+  }
+  Serial.printf("CPU Halted @ %.4X ...rebooting...\n\r", PC -1);
+}
+
+//*********************************************************************************************
+//****                              Breakpoint function                                    ****
+//*********************************************************************************************
+void BreakPoint(void) {
+  dumpReg();
+  while (digitalRead(sw2) == 1 && digitalRead(sw1) == 0);
+  delay(100);                                     //Crude de-bounce
+  while (digitalRead(sw2) == 0 );                 //Wait for single step button to be released
+  delay(100);                                     //Crude de-bounce
+}
+
+
+//*********************************************************************************************
+//****                       Serial input string function                                  ****
+//*********************************************************************************************
+String getInput() {
+  bool gotS = false;
+  String rs = "";
+  char received;
+  while (gotS == false ) {
+    while (Serial.available() > 0)
+    {
+      received = Serial.read();
+      Serial.write(received);                                     //Echo input
+      if (received == '\r' || received == '\n' ) {
+        gotS = true;
+      } else {
+        rs += received;
+      }
+    }
+  }
+  return (rs);
+}
+
+
+
+//*********************************************************************************************
+//****                           Convert HEX to Decimal                                    ****
+//*********************************************************************************************
+unsigned int hexToDec(String hexString) {
+  unsigned int decValue = 0;
+  int nextInt;
+  for (int i = 0; i < hexString.length(); i++) {
+    nextInt = int(hexString.charAt(i));
+    if (nextInt >= 48 && nextInt <= 57) nextInt = map(nextInt, 48, 57, 0, 9);
+    if (nextInt >= 65 && nextInt <= 70) nextInt = map(nextInt, 65, 70, 10, 15);
+    if (nextInt >= 97 && nextInt <= 102) nextInt = map(nextInt, 97, 102, 10, 15);
+    nextInt = constrain(nextInt, 0, 15);
+
+    decValue = (decValue * 16) + nextInt;
+  }
+  return decValue;
+}
+
+//*********************************************************************************************
+//****                  Load bootstrap binaries from SD Card or SPIFFS                     ****
+//*********************************************************************************************
+void bootstrap(void) {
+  File boot;
+  //Try and boot from SD Card or SPIFFS
   if (sdfound == true) {
-    Serial.println("Booting from SD Card");
+    Serial.println("\n\rBooting from SD Card");
     boot = SD.open("/boot.txt");
     if (boot == 0) Serial.println("boot.txt not found");
   } else {
 
-    Serial.println("Booting from SPIFFS");
+    Serial.println("\n\rBooting from SPIFFS");
     if (!SPIFFS.begin(true)) {
       Serial.println("An Error has occurred while mounting SPIFFS");
       while (1);
@@ -282,129 +410,10 @@ void setup() {
     FileToRAM(Fs, Add, sdfound);  //sdfound: false means load from SPIFFS
   }
   boot.close();
-
-
-  PC = 0;                         //Set program counter
-
-  if (digitalRead(sw1) == 0) {
-    BP = 0x0000;                    //Set initial breakpoint
-    BPmode = 0;                     //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
-    Serial.println("Breakpoints enabled");
-    Serial.print("\n\rEnter Breakpoint address in HEX: ");
-    BP = hexToDec(getInput());
-    if (BP > 0xffff) BP = 0xffff;
-    Serial.printf("\n\rBreakpoint set to: %.4X\n\r", BP);
-    Serial.print("\n\rEnter Breakpoint mode: ");
-    BPmode = getInput().toInt();
-    if (BPmode > 2) BPmode = 2;
-    if (BPmode < 0) BPmode = 0;
-    Serial.printf("\n\rBreakpoint mode set to: %1d\n\r", BPmode);
-    Serial.println("Press STEP button to start");
-    while (digitalRead(sw2) == 1);
-    delay(100);
-    while (digitalRead(sw2) == 0);
-    delay(100);
-    Serial.println("\n\rStarting Z80 with breakpoints enabled\n\r");
-
-    //*********************************************************************************************
-    //****                    main Z80 emulation loop with breakpoints                         ****
-    //*********************************************************************************************
-    //Main loop in breakpoint mode, runs about 50% slower than normal mode
-    while (1) {
-      //Single Step and breakpoint logic
-      if (digitalRead(sw1) == 0) {
-        if (bpOn == false && PC == BP) bpOn = true;
-        switch (BPmode) {
-          case 0:
-            BreakPoint();    //Singe step if SW1 is on (low)
-            break;
-          case 1:
-            if (bpOn == true) BreakPoint();    //Stop once breakpoint hit
-            break;
-          case 2:
-            if (PC == BP) BreakPoint();        //Stop only at breakpoint
-            break;
-        }
-      } else {
-        //If not in single step mode then step button becomes a reset button.
-        if (digitalRead(sw2) == 0) {
-          PC = 0;
-          while (digitalRead(sw2) == 0);
-        }
-      }
-      cpu();                              //Execute next instruction
-    }
-  } else {
-
-    //*********************************************************************************************
-    //****                           main Z80 emulation loop                                   ****
-    //*********************************************************************************************
-    //Main loop in normal mode
-    Serial.println("\n\rStarting Z80\n\r");
-    while (1) cpu();                             //Execute next instruction
-  }
-}
-
-
-void loop() {
-  //Never gets here !
-}
-
-//*********************************************************************************************
-//****                             Breaakpoint function                                    ****
-//*********************************************************************************************
-void BreakPoint(void) {
-  dumpReg();
-  while (digitalRead(sw2) == 1 && digitalRead(sw1) == 0);
-  delay(100);                                     //Crude de-bounce
-  while (digitalRead(sw2) == 0 );                 //Wait for single step button to be released
-  delay(100);                                     //Crude de-bounce
-}
-
-//*********************************************************************************************
-//****                       Serial input string function                                  ****
-//*********************************************************************************************
-String getInput() {
-  bool gotS = false;
-  String rs = "";
-  char received;
-
-
-  while (gotS == false ) {
-    while (Serial.available() > 0)
-    {
-      received = Serial.read();
-      Serial.write(received);                                     //Echo input
-      if (received == '\r' || received == '\n' ) {
-        gotS = true;
-      } else {
-        rs += received;
-      }
-    }
-  }
-
-  return (rs);
 }
 
 
 
-//*********************************************************************************************
-//****                           Convert HEX to Decimal                                    ****
-//*********************************************************************************************
-unsigned int hexToDec(String hexString) {
-  unsigned int decValue = 0;
-  int nextInt;
-  for (int i = 0; i < hexString.length(); i++) {
-    nextInt = int(hexString.charAt(i));
-    if (nextInt >= 48 && nextInt <= 57) nextInt = map(nextInt, 48, 57, 0, 9);
-    if (nextInt >= 65 && nextInt <= 70) nextInt = map(nextInt, 65, 70, 10, 15);
-    if (nextInt >= 97 && nextInt <= 102) nextInt = map(nextInt, 97, 102, 10, 15);
-    nextInt = constrain(nextInt, 0, 15);
-
-    decValue = (decValue * 16) + nextInt;
-  }
-  return decValue;
-}
 
 //*********************************************************************************************
 //****                           Get next 8 bit operand                                    ****
@@ -478,22 +487,22 @@ void portOut(uint8_t p, uint8_t v) {
       if (bitRead(v, 1) == 1) pinMode(PB1, OUTPUT); else pinMode(PB1, INPUT_PULLUP);
       break;
     case UART_PORT:                           //UART Write
-      Serial.write(v);                        //Send Char
-      //txBuf[txInPtr] = v;                   //Write char to output buffer
-      //txInPtr++;
-      bitWrite(pIn[UART_LSR], 6, 1);            //Set bit to indicate sent
+      txBuf[txInPtr] = v;                     //Write char to output buffer
+      txInPtr++;
+      bitWrite(pIn[UART_LSR], 6, 1);          //Set bit to indicate sent
       break;
 
     case DCMD:
       pIn[p] = v;
       if (sdfound == true) {
         switch (v) {
-          case 1: diskRead(SD);   pIn[DCMD] = 0; break;
-          case 2: diskWrite(SD);  pIn[DCMD] = 0; break;
-          case 4: SDfileOpen(SD); pIn[DCMD] = 0; break;
-          case 5: SDfileRead(SD); pIn[DCMD] = 0; break;
-          case 6: SDprintDir(SD); pIn[DCMD] = 0; break;
-          case 7: SDsetPath(SD);  pIn[DCMD] = 0; break;
+          case 1: diskRead(SD);         pIn[DCMD] = 0; break;
+          case 2: diskWrite(SD);        pIn[DCMD] = 0; break;
+          case 4: SDfileOpen(SD);       pIn[DCMD] = 0; break;
+          case 5: SDfileRead(SD);       pIn[DCMD] = 0; break;
+          case 6: SDprintDir(SD);       pIn[DCMD] = 0; break;
+          case 7: SDsetPath(SD);        pIn[DCMD] = 0; break;
+          case 8: bootstrap();  PC = 0; pIn[DCMD] = 0; break;   //Force reload of boot images and reboot
           default: Serial.printf("Unknown Disk Command: 0x%.2X\n\r", v); break;
         }
       }
@@ -512,7 +521,7 @@ void portOut(uint8_t p, uint8_t v) {
 
 
 //*********************************************************************************************
-//****                  Read serial input character into buffer task                       ****
+//****                      Serial input and output buffer task                            ****
 //*********************************************************************************************
 void serialTask( void * parameter ) {
   for (;;) {
@@ -523,11 +532,10 @@ void serialTask( void * parameter ) {
       rxInPtr++;
     }
     //Check for chars to be sent
-    //if (txOutPtr != txInPtr) {             //Have we received any chars?
-    //  Serial.write(txBuf[txOutPtr]);       //Send char to console
-    //  txOutPtr++;                          //Inc Output buffer pointer
-    //}
-
+    while (txOutPtr != txInPtr) {           //Have we received any chars?
+      Serial.write(txBuf[txOutPtr]);        //Send char to console
+      txOutPtr++;                           //Inc Output buffer pointer
+    }
     delay(5);
   }
 }
@@ -965,13 +973,13 @@ void dumpReg(void) {
   bitWrite(Fl, 2 , Pf);
   bitWrite(Fl, 1 , Nf);
   bitWrite(Fl, 0 , Cf);
-  V16 = RAM[PC +1] + 256 * RAM[PC +2];      //Get the 16 bit operand
+  V16 = RAM[PC + 1] + 256 * RAM[PC + 2];    //Get the 16 bit operand
   Serial.println();
   Serial.printf("PC: %.4X  %.2X %.2X %.2X (%.2X)\n\r", PC, RAM[PC], RAM[PC + 1], RAM[PC + 2], RAM[V16] );
   Serial.printf("AF: %.2X %.2X\t\tAF': %.2X %.2X \n\r", A, Fl, Aa, Fla);
-  Serial.printf("BC: %.2X %.2X (%.2X)\t\tBC': %.2X %.2X \n\r", B, C, RAM[(B*256)+C], Ba, Ca);
-  Serial.printf("DE: %.2X %.2X (%.2X)\t\tDE': %.2X %.2X \n\r", D, E, RAM[(D*256)+E], Da, Ca);
-  Serial.printf("HL: %.2X %.2X (%.2X)\t\tHL': %.2X %.2X \n\r", H, L, RAM[(H*256)+L], Ha, La);
+  Serial.printf("BC: %.2X %.2X (%.2X)\t\tBC': %.2X %.2X \n\r", B, C, RAM[(B * 256) + C], Ba, Ca);
+  Serial.printf("DE: %.2X %.2X (%.2X)\t\tDE': %.2X %.2X \n\r", D, E, RAM[(D * 256) + E], Da, Ca);
+  Serial.printf("HL: %.2X %.2X (%.2X)\t\tHL': %.2X %.2X \n\r", H, L, RAM[(H * 256) + L], Ha, La);
   Serial.printf("IX: %.4X  IY: %.4X\n\r", IX, IY);
   Serial.printf("SP: %.4X  Top entry: %.4X\n\r", SP, (RAM[SP] + (256 * RAM[SP + 1])));
   Serial.printf("S:%1d  Z:%1d  H:%1d  P/V:%1d  N:%1d  C:%1d\n\r", Sf, Zf, Hf, Pf, Nf, Cf);
@@ -1043,11 +1051,11 @@ uint8_t ADD8(uint8_t a, uint8_t b, bool c) {
 
   //ci = acc ^ a ^ b;
   //ci = (ci >> 7 ) ^ co;
-  
+
   ci = ((a ^ b) ^ 0x80) & 0x80;
-  if (ci){
+  if (ci) {
     ci = ((acc ^ a) & 0x80) != 0;
-  }  
+  }
 
   Pf = bitRead(ci, 1);
   Cf = bitRead(co, 0);
@@ -1070,7 +1078,7 @@ uint8_t SUB8(uint8_t a, uint8_t b, bool c) {
 //*********************************************************************************************
 //****                        Z80 process instruction emulator                             ****
 //*********************************************************************************************
-void cpu(void) {
+bool cpu(void) {
   OC = RAM[PC];                 //Get Opcode
   PC++;                         //Increment Program counter
   switch (OC)  {                //Switch based on OPCode
@@ -1336,7 +1344,7 @@ void cpu(void) {
       calcP(A);                  //update parity flag
       Sf = bitRead(A, 7);       //Update S flag
       break;
-      
+
     case 0x28:                  //** JR Z value **
       JR = get8();
       if (Zf == true) {
@@ -2487,7 +2495,7 @@ void cpu(void) {
       Serial.printf("Unknown OP-Code %.2X at %.4X\n\r", OC, PC - 1);
       break;
   }
-
+  return (RUN);
 }
 
 void CPU_ED(void) {
@@ -2616,6 +2624,23 @@ void CPU_ED(void) {
       Nf = false;
       Pf = true;
       Hf = false;
+      break;
+    case 0xB1:    //** CPIR **
+      cfs = Cf;                 //Save Carry flag
+      V32 = (256 * B) + C;      //Byte count
+      V16 = (256 * H) + L;      //Source
+      Zf == false;
+      while (V32 > 0 && Zf == false) {
+        SUB8(A, RAM[V16], 0) ;  //compare RAM to A
+        V16++;
+        V32--;
+      }
+      H = V16 / 16;             //Update HL
+      L = V16 & 255;
+      B = V32 / 256;            //Update BC
+      C = V32 & 255;
+      Cf = cfs;                 //Restore carry flag
+      if (V32 != 0) Pf = true; else Pf = false;
       break;
     default:
       Serial.printf("Unknown OP-Code ED %.2X at %.4X\n\r", V8a, PC - 1);
@@ -2955,7 +2980,15 @@ void CPU_DD(void) {
 void CPU_FD(void) {
   uint8_t V8a = get8();
   switch (V8a) {
-    case 0xe1:    //** POP IY **
+    case 0x7E:    //** LD A, (IY+ Value) **
+      V8 = get8();
+      if (V8 < 128) {
+        A = RAM[IY + V8];
+      } else {
+        A = RAM[IY - (128 - V8)];
+      }
+      break;
+    case 0xE1:    //** POP IY **
       IY = RAM[SP];
       SP++;
       IY += 256 * RAM[SP];
