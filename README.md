@@ -1,5 +1,10 @@
 # ESP32-Z80-Emulator
 
+*** Update 12th June 2021 ***
+
+Various code improvements and added experimental Telnet support so you can telnet to the Z80 over WiFi. On a Telnet connection being made the Z80 will reboot, when telnet is in use output will also be mirrored to the serial console.
+****************************
+
 *** Update 7th June 2021 ***
 
 Fixed nasty bug that affected multiplication in MBASIC and the ability to enter commands in Zork. Add, subtract, compare and DAA instructions have been improved.
