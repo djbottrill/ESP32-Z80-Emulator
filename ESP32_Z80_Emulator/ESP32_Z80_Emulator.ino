@@ -262,9 +262,10 @@ void setup() {
 
   delay(500);  // needed to start-up task3
 
-
-
   Serial.print("Ready! Use 'telnet ");
+  Serial.print(WiFi.localIP());
+  Serial.println(" 23' to connect");
+  Serial.print("Preferably use 'nc ");
   Serial.print(WiFi.localIP());
   Serial.println(" 23' to connect");
 }
@@ -576,8 +577,9 @@ void portOut(uint8_t p, uint8_t v) {
 //****                      Serial input and output buffer task                            ****
 //*********************************************************************************************
 void serialTask( void * parameter ) {
+  int c;
   for (;;) {
-  
+
     //Check for chars to be sent
     while (txOutPtr != txInPtr) {           //Have we received any chars?
       Serial.write(txBuf[txOutPtr]);        //Send char to console
@@ -596,7 +598,9 @@ void serialTask( void * parameter ) {
     }
     delay(1);
     while (serverClient.available()) {
-      rxBuf[rxInPtr] = serverClient.read();
+      c = serverClient.read();
+      if(c == 0x0A) c = 0x0D;
+      rxBuf[rxInPtr] = c;
       rxInPtr++;
       if (rxInPtr == 1024) rxInPtr = 0;
       delay(1);
