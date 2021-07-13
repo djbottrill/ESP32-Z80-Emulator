@@ -3,7 +3,7 @@
 *** Update 13th July 2021 ***
 
 Improved WiFi connection reliability. 
-
+****************************
 
 *** Update 12th June 2021 ***
 
