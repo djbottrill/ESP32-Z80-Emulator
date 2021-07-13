@@ -1,5 +1,10 @@
 # ESP32-Z80-Emulator
 
+*** Update 13th July 2021 ***
+
+Improved WiFi connection reliability. 
+
+
 *** Update 12th June 2021 ***
 
 Various code improvements and added experimental Telnet support so you can telnet to the Z80 over WiFi. On a Telnet connection being made the Z80 will reboot, when telnet is in use output will also be mirrored to the serial console.
