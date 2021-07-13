@@ -3,9 +3,6 @@
 #include <SD.h>
 #include "SPIFFS.h"
 #include <WiFi.h>
-#include <WiFiMulti.h>
-
-WiFiMulti wifiMulti;
 #include "credentials.h"
 
 
@@ -153,7 +150,6 @@ char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
-
 TaskHandle_t Task1, Task2, Task3;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
 
@@ -226,25 +222,18 @@ void setup() {
     sdfound = false;
   }
 
-  //Start WiFi
-  wifiMulti.addAP(mySSID, myPASSWORD);
-
   Serial.print("\n\rConnecting Wifi ");
-  for (int loops = 10; loops > 0; loops--) {
-    if (wifiMulti.run() == WL_CONNECTED) {
-      Serial.print("\n\rWiFi connected ");
-      Serial.print("IP address: ");
-      Serial.println(WiFi.localIP());
-      break;
-    }
-    else {
-      Serial.print(".");
-      delay(100);
-    }
+  WiFi.begin(mySSID, myPASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
-  if (wifiMulti.run() != WL_CONNECTED) {
-    Serial.println("WiFi connect failed");
-  }
+
+  Serial.print("\n\rWiFi connected ");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
   server.begin();
   server.setNoDelay(true);
 
@@ -599,7 +588,7 @@ void serialTask( void * parameter ) {
     delay(1);
     while (serverClient.available()) {
       c = serverClient.read();
-      if(c == 0x0A) c = 0x0D;
+      if (c == 0x0A) c = 0x0D;
       rxBuf[rxInPtr] = c;
       rxInPtr++;
       if (rxInPtr == 1024) rxInPtr = 0;
@@ -616,7 +605,8 @@ void serialTask( void * parameter ) {
 void TelnetTask( void * parameter ) {
   for (;;) {
 
-    if (wifiMulti.run() == WL_CONNECTED) {
+    //if (wifiMulti.run() == WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED ) {
       //check if there are any new clients
       if (server.hasClient()) {
         serverClient = server.available();
