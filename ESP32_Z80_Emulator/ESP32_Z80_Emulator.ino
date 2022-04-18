@@ -1,7 +1,7 @@
 #include "FS.h"
 #include <SPI.h>
-#include <SD.h>
-#include "SPIFFS.h"
+#include "SD.h"
+#include <SPIFFS.h>
 #include <WiFi.h>
 #include "credentials.h"
 
@@ -10,7 +10,33 @@ WiFiServer server(23);
 WiFiClient serverClient;
 
 
-#define T2
+#define T1
+
+#ifdef LOLIN32
+#define SS    5
+#define MOSI  23
+#define MISO  19
+#define SCK   18
+SPIClass sdSPI(VSPI);
+
+//Virtual GPIO Port A
+#define PA0 32
+#define PA1 33
+#define PA2 25
+#define PA3 26
+#define PA4 27
+#define PA5 14
+#define PA6 12
+#define PA7 13
+
+//Virtual GPIO Port B
+#define PB0 17
+#define PB1 16
+
+//BreakPoint switches
+#define swA 15                  //Breakpoints on / Off
+#endif
+
 
 #ifdef T1
 //TTGO-T1
@@ -18,6 +44,7 @@ WiFiClient serverClient;
 #define MOSI  15
 #define MISO  2
 #define SCK   14
+SPIClass sdSPI(HSPI);
 
 //Virtual GPIO Port A
 #define PA0 32
@@ -34,9 +61,10 @@ WiFiClient serverClient;
 #define PB1 19
 
 //BreakPoint switches
-#define sw1 4                   //Breakpoints on / Off
+#define swA 4                   //Breakpoints on / Off
 #define sw2 0                   //Single Step push button
 #endif
+
 
 #ifdef T2
 //TTGO-T2
@@ -71,10 +99,12 @@ ESP32_SSD1331 ssd1331(SCLK_OLED, MISO_OLED, MOSI_OLED, CS_OLED, DC_OLED, RST_OLE
 #define PB0 21
 #define PB1 22
 
+
 //BreakPoint switches
-#define sw1 2                   //Breakpoints on / Off
+#define swA 2                   //Breakpoints on / Off
 #define sw2 0                   //Single Step push button
 #endif
+
 
 //Virtual GPIO Port
 const uint8_t GPP = 0;
@@ -119,9 +149,10 @@ bool Hf = false;                //Half Carry flag
 bool Pf = false;                //Parity / Overflow flag
 bool Nf = false;                //Add / Subtract flag
 
-bool RUN = true;                //RUN flag
+bool RUN = false;               //RUN flag
+bool SingleStep = false;        //Single Step flag
 bool intE = false;              //Interrupt enable
-uint16_t BP = 0;                //Breakpoint
+uint16_t BP = 0xffff;           //Breakpoint
 uint8_t BPmode = 0;             //Breakpoint mode
 bool bpOn = false;              //BP passed flag
 uint8_t OC;                     //Opcode store
@@ -138,19 +169,19 @@ bool dled;                      //Disk activity flag
 uint8_t RAM[65536] = {};        //RAM
 uint8_t pOut[256];              //Output port buffer
 uint8_t pIn[256];               //Input port buffer
-uint8_t rxBuf[1024];             //Serial receive buffer
-uint16_t rxInPtr;                //Serial receive buffer input pointer
-uint16_t rxOutPtr;               //Serial receive buffer output pointer
-uint8_t txBuf[1024];             //Serial transmit buffer
-uint16_t txInPtr;                //Serial transmit buffer input pointer
-uint16_t txOutPtr;               //Serial transmit buffer output pointer
+uint8_t rxBuf[1024];            //Serial receive buffer
+uint16_t rxInPtr;               //Serial receive buffer input pointer
+uint16_t rxOutPtr;              //Serial receive buffer output pointer
+uint8_t txBuf[1024];            //Serial transmit buffer
+uint16_t txInPtr;               //Serial transmit buffer input pointer
+uint16_t txOutPtr;              //Serial transmit buffer output pointer
 
 int vdrive;                     //Virtual drive number
 char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
-TaskHandle_t Task1, Task2, Task3;      //Task handles
+TaskHandle_t Task1, Task2, Task3, Task4;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
 
 
@@ -164,14 +195,13 @@ void setup() {
   Serial.println("c");          //Send esc c to reset screen
   Serial.println("****        Shady Grove        ****");
   Serial.println("****  Z80 Emulator for ESP32   ****");
-  Serial.println("**** David Bottrill 2021  V1.4 ****");
+  Serial.println("**** David Bottrill 2022  V2.0 ****");
   Serial.println();
 
   pinMode(LED_BUILTIN, OUTPUT);   //Built in LED functions as disk active indicator
 
   //BreakPoint switch inputs
-  pinMode(sw1, INPUT_PULLUP);
-  pinMode(sw2, INPUT_PULLUP);
+  pinMode(swA, INPUT_PULLUP);
 
   //Initialise virtual GPIO ports
   Serial.println("Initialising Z80 Virtual GPIO Port");
@@ -184,40 +214,59 @@ void setup() {
   Serial.println("Initialising Z80 Virtual 6850 UART");
   pIn[UART_LSR] = 0x40;                       //Set bit to say TX buffer is empty
 
+  //Depending if swA is pressed run in breakpoint mode or normal mode.
+  if (digitalRead(swA) == 0) {
+
+    BP = 0x0000;                //Set initial breakpoint
+    BPmode = 0;                 //BP mode 0 runs normally
+    Serial.println("Breakpoints enabled");
+    Serial.print("\n\rEnter Breakpoint address in HEX: ");
+    BP = hexToDec(getInput());
+    if (BP > 0xffff) BP = 0xffff;
+    Serial.printf("\n\rBreakpoint set to: %.4X\n\r", BP);
+    Serial.println("\n\rBreakpoint modes: ");
+    Serial.println("1 - Single Step");
+    Serial.println("2 - Single Step from Breakpoint");
+    Serial.println("3 - Stop each time Breakpoint Reached");
+    Serial.print("\n\rEnter Breakpoint mode: ");
+    BPmode = getInput().toInt();
+    if (BPmode > 3) BPmode = 3;
+    if (BPmode < 1) BPmode = 1;
+    Serial.printf("\n\rBreakpoint mode set to: %1d\n\r", BPmode);
+    Serial.println("Press button A to start");
+    buttonA();
+  }
+
+  //Start the CPU task
+  RUN = false;
+  //baton = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCore(
+    CPUTask,
+    "CPUTask",
+    3000,
+    NULL,
+    1,
+    &Task1,
+    1);         // Core 1
+  delay(500);   // needed to start-up task
+
 
   //Start the Serial receive char task
-  baton = xSemaphoreCreateMutex();
-
   xTaskCreatePinnedToCore(
     serialTask,
     "SerialTask",
     3000,
     NULL,
     1,
-    &Task1,
-    0);       // Core 0
-
-  delay(500);  // needed to start-up task1
-
-#ifdef T2
-  //Start the OLED task
-  baton = xSemaphoreCreateMutex();
-
-  xTaskCreatePinnedToCore(
-    OLEDTask,
-    "OLEDTask",
-    3000,
-    NULL,
-    1,
     &Task2,
-    0);       // Core 0
-
-  delay(500);  // needed to start-up task2
-#endif
+    0);         // Core 0
+  delay(500);   // needed to start-up task
 
   Serial.println("Initialising Z80 Virtual Disk Controller");
-  SPI.begin(SCK, MISO, MOSI, SS);
-  if (!SD.begin(SS)) {
+  sdSPI.begin(SCK, MISO, MOSI, SS);
+  if (!SD.begin(SS, sdSPI)) {
+    //SPI.begin(SCK, MISO, MOSI, SS);
+    //if (!SD.begin(SS)) {
     Serial.println("SD Card Mount Failed");
     sdfound = false;
   }
@@ -238,8 +287,6 @@ void setup() {
   server.setNoDelay(true);
 
   //Start the Telnet task
-  baton = xSemaphoreCreateMutex();
-
   xTaskCreatePinnedToCore(
     TelnetTask,
     "TelnetTask",
@@ -247,9 +294,8 @@ void setup() {
     NULL,
     1,
     &Task3,
-    0);       // Core 0
-
-  delay(500);  // needed to start-up task3
+    0);         // Core 0
+  delay(500);   // needed to start-up task
 
   Serial.print("Ready! Use 'telnet ");
   Serial.print(WiFi.localIP());
@@ -257,87 +303,95 @@ void setup() {
   Serial.print("Preferably use 'nc ");
   Serial.print(WiFi.localIP());
   Serial.println(" 23' to connect");
+
+#ifdef T2
+  //Start the OLED task
+  xTaskCreatePinnedToCore(
+    OLEDTask,
+    "OLEDTask",
+    3000,
+    NULL,
+    1,
+    &Task4,
+    0);       // Core 0
+  delay(500);  // needed to start-up task
+#endif
+  
 }
 
 void loop() {
   bootstrap();                    //Load boot images from SD Card or SPIFFS
   PC = 0;                         //Set program counter
-  RUN = true;                     //Set RUN flag to true
-
-  //Depending if SW1 is pressed run in breakpoint mode or normal mode.
-  switch (digitalRead(sw1)) {
+  switch (BPmode) {
     case 0:
-      BP = 0x0000;                //Set initial breakpoint
-      BPmode = 0;                 //BP mode 0 stops whenever switch 1 is on, switch 2 single steps
-      Serial.println("Breakpoints enabled");
-      Serial.print("\n\rEnter Breakpoint address in HEX: ");
-      BP = hexToDec(getInput());
-      if (BP > 0xffff) BP = 0xffff;
-      Serial.printf("\n\rBreakpoint set to: %.4X\n\r", BP);
-      Serial.print("\n\rEnter Breakpoint mode: ");
-      BPmode = getInput().toInt();
-      if (BPmode > 2) BPmode = 2;
-      if (BPmode < 0) BPmode = 0;
-      Serial.printf("\n\rBreakpoint mode set to: %1d\n\r", BPmode);
-      Serial.println("Press STEP button to start");
-      while (digitalRead(sw2) == 1);
-      delay(100);
-      while (digitalRead(sw2) == 0);
-      delay(100);
-      Serial.println("\n\rStarting Z80 with breakpoints enabled\n\r");
-
-      //*********************************************************************************************
-      //****                    main Z80 emulation loop with breakpoints                         ****
-      //*********************************************************************************************
-      //Main loop in breakpoint mode, runs about 50% slower than normal mode
-      while (RUN) {
-        //Single Step and breakpoint logic
-        if (digitalRead(sw1) == 0) {
-          if (bpOn == false && PC == BP) bpOn = true;
-          switch (BPmode) {
-            case 0:
-              BreakPoint();    //Singe step if SW1 is on (low)
-              break;
-            case 1:
-              if (bpOn == true) BreakPoint();    //Stop once breakpoint hit
-              break;
-            case 2:
-              if (PC == BP) BreakPoint();        //Stop only at breakpoint
-              break;
-          }
-        } else {
-          //If not in single step mode then step button becomes a reset button.
-          if (digitalRead(sw2) == 0) {
-            PC = 0;
-            while (digitalRead(sw2) == 0);
-          }
-        }
-        cpu(0);                                    //Execute next instruction
-      }
-      break;
-
-    case 1:
-      //*********************************************************************************************
-      //****                           main Z80 emulation loop                                   ****
-      //*********************************************************************************************
       //Main loop in normal mode
       Serial.println("\n\rStarting Z80\n\r");
-      while (cpu(1));                          //Execute next instruction
+      SingleStep = false;
+      bpOn = false;
+      RUN = true;
+      while (RUN == true) {
+        if (digitalRead(swA) == 0) { //Pressing button A will force a restart
+          RUN = false;
+          while (digitalRead(swA) == 0) delay(50);
+        }
+        delay(50);
+      }
+      Serial.printf("\n\rCPU Halted @ %.4X ...rebooting...\n\r", PC - 1);
+      PC = 0;
+      break;
+    case 1:
+      Serial.println("\n\rStarting Z80 in Single Step Mode\n\r");
+      SingleStep = true;
+      while (1) {
+        dumpReg();
+        buttonA();
+        RUN = true;                         //Start CPU
+        delay(50);
+        while (RUN == true) delay(50);      //Wait for CPU to stop
+      }
+      break;
+    case 2:
+      Serial.println("\n\rStarting Z80 in Single step from Breakpoint Mode\n\r");
+      bpOn = true;                          //Run until BP
+      SingleStep = false;
+      RUN = true;
+      delay(50);
+      while (RUN == true)delay(50);         //Wait for CPU to stop
+      bpOn = false;
+      SingleStep = true;
+      while (1) {                           //Now Single step
+        dumpReg();
+        buttonA();
+        RUN = true;                         //Start CPU
+        delay(50);
+        while (RUN == true) delay(50);      //Wait for CPU to stop
+      }
+      break;
+    case 3:
+      Serial.println("\n\rStarting Z80 in Stop at Breakpoint Mode\n\r");
+      bpOn = true;                          //Run until BP
+      SingleStep = false;
+      while (1) {
+        RUN = true;
+        delay(50);
+        while (RUN == true)delay(50);       //Wait for CPU to stop
+        dumpReg();
+
+        buttonA();
+        Serial.println(BP, HEX);
+      }
+      break;
+    default:
       break;
   }
-  Serial.printf("CPU Halted @ %.4X ...rebooting...\n\r", PC - 1);
+
 }
 
-//*********************************************************************************************
-//****                              Breakpoint function                                    ****
-//*********************************************************************************************
-void BreakPoint(void) {
-  dumpReg();
-  while (digitalRead(sw2) == 1 && digitalRead(sw1) == 0);
-  delay(100);                                     //Crude de-bounce
-  while (digitalRead(sw2) == 0 );                 //Wait for single step button to be released
-  delay(100);                                     //Crude de-bounce
+void buttonA(void) {
+  while (digitalRead(swA) == 1) delay(5);
+  while (digitalRead(swA) == 0) delay(5);
 }
+
 
 
 //*********************************************************************************************
@@ -566,6 +620,7 @@ void portOut(uint8_t p, uint8_t v) {
 //****                      Serial input and output buffer task                            ****
 //*********************************************************************************************
 void serialTask( void * parameter ) {
+  Serial.println("Serial Task Started");
   int c;
   for (;;) {
 
@@ -603,6 +658,7 @@ void serialTask( void * parameter ) {
 //****                                 Telnet task                                         ****
 //*********************************************************************************************
 void TelnetTask( void * parameter ) {
+  Serial.println("Telnet Task Started");
   for (;;) {
 
     //if (wifiMulti.run() == WL_CONNECTED) {
@@ -620,7 +676,7 @@ void TelnetTask( void * parameter ) {
   }
 }
 
-
+/*
 #ifdef T2
 //*********************************************************************************************
 //****                            OLED display task                                        ****
@@ -770,6 +826,7 @@ void OLEDTask( void * parameter ) {
   }
 }
 #endif
+*/
 
 //*********************************************************************************************
 //****                             Z80 input port handler                                  ****
@@ -799,6 +856,7 @@ uint8_t portIn(uint8_t p) {
       if (rxOutPtr != rxInPtr) {              //Have we received any chars?
         pIn[UART_PORT] = rxBuf[rxOutPtr];     //Put char in UART port
         rxOutPtr++;                          //Inc Output buffer pointer
+        if(rxOutPtr == 1024) rxOutPtr = 0;
         bitWrite(pIn[UART_LSR], 0, 1);       //Set bit to say char can be read
       }
       break;
@@ -815,7 +873,7 @@ uint8_t portIn(uint8_t p) {
 //*********************************************************************************************
 //****                             Print SD card directory                                 ****
 //*********************************************************************************************
-bool  SDprintDir(fs::FS & fs) {                                     // Show files in /download
+void SDprintDir(fs::FS & fs) {                                     // Show files in /download
   File dir = fs.open(sddir, FILE_READ);
   dir.rewindDirectory();
   int cols = 0;
@@ -1159,1426 +1217,1432 @@ uint8_t SUB8(uint8_t a, uint8_t b, bool c) {
 //*********************************************************************************************
 //****                        Z80 process instruction emulator                             ****
 //*********************************************************************************************
-bool cpu(bool cont) {
-  do {
-    OC = RAM[PC];                 //Get Opcode
-    PC++;                         //Increment Program counter
-    switch (OC)  {                //Switch based on OPCode
-      //********************************************
-      // Instructions 00 to 0F fully implemented
-      //********************************************
-      case 0x00:                  //** NOP **
-        break;
-      case 0x01:                  //** LD BC, VALUE **
-        C = get8();
-        B = get8();
-        break;
-      case 0x02:                  //** LD (BC), A **
-        RAM[(256 * B) + C] = A;
-        break;
-      case 0x03:                  //** INC BC **
-        V16 = (256 * B) + C;
-        V16++;
-        B = V16 / 256;
-        C = V16 & 255;
-        break;
-      case 0x04:                  //** INC B **
-        cfs = Cf;
-        B = ADD8(B, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x05:                  //** DEC B **
-        cfs = Cf;
-        B = SUB8(B, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x06:                  //** LD B, value **
-        B = get8();
-        break;
-      case 0x07:                  //** RLCA **
-        Cf = bitRead(A, 7);
-        A = A << 1;
-        bitWrite(A, 0, Cf);
-        Hf == false;
-        Nf == false;
-        break;
-      case 0x08:                  //** EX AF AF' **
-        bitWrite(Fl, 7 , Sf);
-        bitWrite(Fl, 6 , Zf);
-        bitWrite(Fl, 4 , Hf);
-        bitWrite(Fl, 2 , Pf);
-        bitWrite(Fl, 1 , Nf);
-        bitWrite(Fl, 0 , Cf);
-        V8 = A;
-        A = Aa;
-        Aa = V8;
-        V8 = Fl;
-        Fl = Fla;
-        Fla = V8;
-        Sf = bitRead(Fl, 7);
-        Zf = bitRead(Fl, 6);
-        Hf = bitRead(Fl, 4);
-        Pf = bitRead(Fl, 2);
-        Nf = bitRead(Fl, 1);
-        Cf = bitRead(Fl, 0);
-        break;
-      case 0x09:                  //** ADD HL, BC **
-        V32 = (H * 256) + L;
-        V16 = (B * 256) + C;
-        if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
-        V32 += V16;
-        Cf = bitRead(V32, 16);    //** Update carry flag **  *
-        H = V32 >> 8  & 0xff;
-        L = V32 & 0xff;
-        Nf = false;               //False as it's an addition
-        break;
-      case 0x0A:                  //** LD A, (BC) **
-        A = RAM[(B * 256) + C];
-        break;
-      case 0x0B:                  //** DEC BC **
-        V16 = C + (256 * B);
-        V16--;
-        B = V16 / 256;
-        C = V16 & 255;
-        break;
-      case 0x0C:                  //** INC C **
-        cfs = Cf;
-        C = ADD8(C, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x0D:                  //** DEC C **
-        cfs = Cf;
-        C = SUB8(C, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x0E:                  //** LD C, value **
-        C = get8();
-        break;
-      case 0x0F:                  //** RRCA **
-        Cf = bitRead(A, 0);
-        A = A >> 1;
-        bitWrite(A, 7, Cf);
-        Hf = false;
-        Nf = false;
-        break;
-      //********************************************
+void CPUTask( void * parameter ) {
+  Serial.print("CPU Task Started RUN = ");
+  Serial.println(RUN, DEC);
+  while(1) {
 
-      //********************************************
-      // Instructions 10 to 1F fully implemented
-      //********************************************
-      case 0x10:                  //** DJNZ, value **
-        JR = get8();
-        B--;
-        if (B != 0) {
+    if (RUN == true) {
+      OC = RAM[PC];                 //Get Opcode
+      PC++;                         //Increment Program counter
+      switch (OC)  {                //Switch based on OPCode
+        //********************************************
+        // Instructions 00 to 0F fully implemented
+        //********************************************
+        case 0x00:                  //** NOP **
+          break;
+        case 0x01:                  //** LD BC, VALUE **
+          C = get8();
+          B = get8();
+          break;
+        case 0x02:                  //** LD (BC), A **
+          RAM[(256 * B) + C] = A;
+          break;
+        case 0x03:                  //** INC BC **
+          V16 = (256 * B) + C;
+          V16++;
+          B = V16 / 256;
+          C = V16 & 255;
+          break;
+        case 0x04:                  //** INC B **
+          cfs = Cf;
+          B = ADD8(B, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x05:                  //** DEC B **
+          cfs = Cf;
+          B = SUB8(B, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x06:                  //** LD B, value **
+          B = get8();
+          break;
+        case 0x07:                  //** RLCA **
+          Cf = bitRead(A, 7);
+          A = A << 1;
+          bitWrite(A, 0, Cf);
+          Hf == false;
+          Nf == false;
+          break;
+        case 0x08:                  //** EX AF AF' **
+          bitWrite(Fl, 7 , Sf);
+          bitWrite(Fl, 6 , Zf);
+          bitWrite(Fl, 4 , Hf);
+          bitWrite(Fl, 2 , Pf);
+          bitWrite(Fl, 1 , Nf);
+          bitWrite(Fl, 0 , Cf);
+          V8 = A;
+          A = Aa;
+          Aa = V8;
+          V8 = Fl;
+          Fl = Fla;
+          Fla = V8;
+          Sf = bitRead(Fl, 7);
+          Zf = bitRead(Fl, 6);
+          Hf = bitRead(Fl, 4);
+          Pf = bitRead(Fl, 2);
+          Nf = bitRead(Fl, 1);
+          Cf = bitRead(Fl, 0);
+          break;
+        case 0x09:                  //** ADD HL, BC **
+          V32 = (H * 256) + L;
+          V16 = (B * 256) + C;
+          if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
+          V32 += V16;
+          Cf = bitRead(V32, 16);    //** Update carry flag **  *
+          H = V32 >> 8  & 0xff;
+          L = V32 & 0xff;
+          Nf = false;               //False as it's an addition
+          break;
+        case 0x0A:                  //** LD A, (BC) **
+          A = RAM[(B * 256) + C];
+          break;
+        case 0x0B:                  //** DEC BC **
+          V16 = C + (256 * B);
+          V16--;
+          B = V16 / 256;
+          C = V16 & 255;
+          break;
+        case 0x0C:                  //** INC C **
+          cfs = Cf;
+          C = ADD8(C, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x0D:                  //** DEC C **
+          cfs = Cf;
+          C = SUB8(C, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x0E:                  //** LD C, value **
+          C = get8();
+          break;
+        case 0x0F:                  //** RRCA **
+          Cf = bitRead(A, 0);
+          A = A >> 1;
+          bitWrite(A, 7, Cf);
+          Hf = false;
+          Nf = false;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 10 to 1F fully implemented
+        //********************************************
+        case 0x10:                  //** DJNZ, value **
+          JR = get8();
+          B--;
+          if (B != 0) {
+            if (JR < 128) {
+              PC += JR;               //Forward Jump
+            } else {
+              PC = PC - (256 - JR);   //Backward jump
+            }
+          }
+          break;
+        case 0x11:                  //** LD DE, VALUE **
+          E = get8();
+          D = get8();
+          break;
+        case 0x12:                  //** LD (DE), A **
+          RAM[(256 * D) + E] = A;
+          break;
+        case 0x13:                  //** INC DE **
+          V16 = E + (256 * D);
+          V16++;
+          D = V16 / 256;
+          E = V16 & 255;
+          break;
+        case 0x14:                  //** INC D **
+          cfs = Cf;
+          D = ADD8(D, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x15:                  //** DEC D **
+          cfs = Cf;
+          D = SUB8(D, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x16:                  //** LD D, value **
+          D = get8();
+          break;
+        case 0x17:                  //** RLA **
+          cfs = Cf;                 //Save carry flag
+          Cf = bitRead(A, 7);       //Bit 7 becomes new carry
+          A = A << 1;               //Shift left
+          bitWrite(A, 0, cfs);      //bit 0 becomes old carry
+          Hf == false;
+          Nf == false;
+          break;
+        case 0x18:                  //** JR offset **
+          JR = get8();
           if (JR < 128) {
             PC += JR;               //Forward Jump
           } else {
             PC = PC - (256 - JR);   //Backward jump
           }
-        }
-        break;
-      case 0x11:                  //** LD DE, VALUE **
-        E = get8();
-        D = get8();
-        break;
-      case 0x12:                  //** LD (DE), A **
-        RAM[(256 * D) + E] = A;
-        break;
-      case 0x13:                  //** INC DE **
-        V16 = E + (256 * D);
-        V16++;
-        D = V16 / 256;
-        E = V16 & 255;
-        break;
-      case 0x14:                  //** INC D **
-        cfs = Cf;
-        D = ADD8(D, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x15:                  //** DEC D **
-        cfs = Cf;
-        D = SUB8(D, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x16:                  //** LD D, value **
-        D = get8();
-        break;
-      case 0x17:                  //** RLA **
-        cfs = Cf;                 //Save carry flag
-        Cf = bitRead(A, 7);       //Bit 7 becomes new carry
-        A = A << 1;               //Shift left
-        bitWrite(A, 0, cfs);      //bit 0 becomes old carry
-        Hf == false;
-        Nf == false;
-        break;
-      case 0x18:                  //** JR offset **
-        JR = get8();
-        if (JR < 128) {
-          PC += JR;               //Forward Jump
-        } else {
-          PC = PC - (256 - JR);   //Backward jump
-        }
-        break;
-      case 0x19:                  //** ADD HL, DE **
-        V32 = (H * 256) + L;
-        V16 = (D * 256) + E;
-        if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
-        V32 += V16;
-        Cf = bitRead(V32, 16);    //Update carry flag
-        H = V32 >> 8 & 0xff;
-        L = V32 & 0xff;
-        Nf = false;               //False as it's an addition
-        break;
-      case 0x1A:                  //** LD A, (DE) **
-        A = RAM[(D * 256) + E];
-        break;
-      case 0x1B:                  //** DEC DE **
-        V16 = E + (256 * D);
-        V16--;
-        D = V16 / 256;
-        E = V16 & 255;
-        break;
-      case 0x1C:                  //** INC E **
-        cfs = Cf;
-        E = ADD8(E, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x1D:                  //** DEC E **
-        cfs = Cf;
-        E = SUB8(E, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x1E:                  //** LD E, value **
-        E = get8();
-        break;
-      case 0x1F:                  //** RR A **
-        cfs = Cf;                 //Save carry flag
-        Cf = bitRead(A, 0);       //Update carry flag
-        A = A >> 1;               //Shift right
-        bitWrite(A, 7, cfs);      //add in the old carry flag
-        Hf = false;
-        Nf = false;
-        break;
-      //********************************************
+          break;
+        case 0x19:                  //** ADD HL, DE **
+          V32 = (H * 256) + L;
+          V16 = (D * 256) + E;
+          if (bitRead(V32, 11) == 1 && bitRead(V16, 11) == 1) Hf = true; else Hf = false; //Half carry flag
+          V32 += V16;
+          Cf = bitRead(V32, 16);    //Update carry flag
+          H = V32 >> 8 & 0xff;
+          L = V32 & 0xff;
+          Nf = false;               //False as it's an addition
+          break;
+        case 0x1A:                  //** LD A, (DE) **
+          A = RAM[(D * 256) + E];
+          break;
+        case 0x1B:                  //** DEC DE **
+          V16 = E + (256 * D);
+          V16--;
+          D = V16 / 256;
+          E = V16 & 255;
+          break;
+        case 0x1C:                  //** INC E **
+          cfs = Cf;
+          E = ADD8(E, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x1D:                  //** DEC E **
+          cfs = Cf;
+          E = SUB8(E, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x1E:                  //** LD E, value **
+          E = get8();
+          break;
+        case 0x1F:                  //** RR A **
+          cfs = Cf;                 //Save carry flag
+          Cf = bitRead(A, 0);       //Update carry flag
+          A = A >> 1;               //Shift right
+          bitWrite(A, 7, cfs);      //add in the old carry flag
+          Hf = false;
+          Nf = false;
+          break;
+        //********************************************
 
-      //********************************************
-      // Instructions 20 to 2F fully implemented
-      //********************************************
-      case 0x20:                  //** JR NZ , value **
-        JR = get8();
-        if (Zf == false) {
-          if (JR < 128) {
-            PC += JR;               //Forward Jump
-          } else {
-            PC = PC - (256 - JR);   //Backward jump
+        //********************************************
+        // Instructions 20 to 2F fully implemented
+        //********************************************
+        case 0x20:                  //** JR NZ , value **
+          JR = get8();
+          if (Zf == false) {
+            if (JR < 128) {
+              PC += JR;               //Forward Jump
+            } else {
+              PC = PC - (256 - JR);   //Backward jump
+            }
           }
-        }
-        break;
-      case 0x21:                  //** LD HL, VALUE **
-        L = get8();
-        H = get8();
-        break;
-      case 0x22:                  //** LD (value), HL **
-        V16 = get16();
-        RAM[V16] = L;
-        RAM[V16 + 1] = H;
-        break;
-      case 0x23:                  //** INC HL **
-        V16 = L + (256 * H);
-        V16++;
-        H = V16 / 256;
-        L = V16 & 255;
-        break;
-      case 0x24:                  //** INC H **
-        cfs = Cf;
-        H = ADD8(H, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x25:                  //** DEC H **
-        cfs = Cf;
-        H = SUB8(H, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x26:                  //** LD H, value **
-        H = get8();
-        break;
-      case 0x27:                  //** DAA **
-        uint8_t ua, la;
-        la = A & 0x0f;          //lower nibble of A
-        ua = A / 16 ;   //Upper nibble of A
-        bool br;
-        br = false;
-        if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //1
-        if (br == false && Cf == 0 && ua <  9 && Hf == 0 && la >  9) Cf = 0; A += 0x06; br = true;  //2
-        if (br == false && Cf == 0 && ua < 10 && Hf == 1 && la <  4) Cf = 0; A += 0x06; br = true;  //3
-        if (br == false && Cf == 0 && ua >  9 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //4
-        if (br == false && Cf == 0 && ua >  8 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //5
-        if (br == false && Cf == 0 && ua >  9 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //6
-        if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //7
-        if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //8
-        if (br == false && Cf == 1 && ua <  4 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //9
-        if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //10
-        if (br == false && Cf == 0 && ua <  9 && Hf == 1 && la >  5) Cf = 0; A += 0xFA; br = true;  //11
-        if (br == false && Cf == 1 && ua >  6 && Hf == 0 && la < 10) Cf = 1; A += 0xA0; br = true;  //12
-        if (br == false && Cf == 1 && ua >  5 && ua < 8 && Hf == 1 && la >  5) Cf = 1; A += 0x9A;  //13
+          break;
+        case 0x21:                  //** LD HL, VALUE **
+          L = get8();
+          H = get8();
+          break;
+        case 0x22:                  //** LD (value), HL **
+          V16 = get16();
+          RAM[V16] = L;
+          RAM[V16 + 1] = H;
+          break;
+        case 0x23:                  //** INC HL **
+          V16 = L + (256 * H);
+          V16++;
+          H = V16 / 256;
+          L = V16 & 255;
+          break;
+        case 0x24:                  //** INC H **
+          cfs = Cf;
+          H = ADD8(H, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x25:                  //** DEC H **
+          cfs = Cf;
+          H = SUB8(H, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x26:                  //** LD H, value **
+          H = get8();
+          break;
+        case 0x27:                  //** DAA **
+          uint8_t ua, la;
+          la = A & 0x0f;          //lower nibble of A
+          ua = A / 16 ;   //Upper nibble of A
+          bool br;
+          br = false;
+          if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //1
+          if (br == false && Cf == 0 && ua <  9 && Hf == 0 && la >  9) Cf = 0; A += 0x06; br = true;  //2
+          if (br == false && Cf == 0 && ua < 10 && Hf == 1 && la <  4) Cf = 0; A += 0x06; br = true;  //3
+          if (br == false && Cf == 0 && ua >  9 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //4
+          if (br == false && Cf == 0 && ua >  8 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //5
+          if (br == false && Cf == 0 && ua >  9 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //6
+          if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la < 10) Cf = 1; A += 0x60; br = true;  //7
+          if (br == false && Cf == 1 && ua <  3 && Hf == 0 && la >  9) Cf = 1; A += 0x66; br = true;  //8
+          if (br == false && Cf == 1 && ua <  4 && Hf == 1 && la <  4) Cf = 1; A += 0x66; br = true;  //9
+          if (br == false && Cf == 0 && ua < 10 && Hf == 0 && la < 10) Cf = 0;            br = true;  //10
+          if (br == false && Cf == 0 && ua <  9 && Hf == 1 && la >  5) Cf = 0; A += 0xFA; br = true;  //11
+          if (br == false && Cf == 1 && ua >  6 && Hf == 0 && la < 10) Cf = 1; A += 0xA0; br = true;  //12
+          if (br == false && Cf == 1 && ua >  5 && ua < 8 && Hf == 1 && la >  5) Cf = 1; A += 0x9A;  //13
 
-        if (A == 0) Zf = true; else Zf = false;
-        calcP(A);                  //update parity flag
-        Sf = bitRead(A, 7);       //Update S flag
-        break;
+          if (A == 0) Zf = true; else Zf = false;
+          calcP(A);                  //update parity flag
+          Sf = bitRead(A, 7);       //Update S flag
+          break;
 
-      case 0x28:                  //** JR Z value **
-        JR = get8();
-        if (Zf == true) {
-          if (JR < 128) {
-            PC += JR;               //Forward Jump
-          } else {
-            PC = PC - (256 - JR);   //Backward jump
+        case 0x28:                  //** JR Z value **
+          JR = get8();
+          if (Zf == true) {
+            if (JR < 128) {
+              PC += JR;               //Forward Jump
+            } else {
+              PC = PC - (256 - JR);   //Backward jump
+            }
           }
-        }
-        break;
-      case 0x29:                  //** ADD HL, HL **
-        V32 = (H * 256) + L;
-        if (bitRead(V32, 11) == 1) Hf = true; else Hf = false; //Half carry flag
-        V32 = V32 << 1;           //add it again
-        Cf = bitRead(V32, 16);    //** Update carry flag **  *
-        H = (V32 / 256) & 0xff;
-        L = V32 & 0xff;
-        Nf = false;               //False as it's an addition
-        break;
-      case 0x2A:                  //** LD HL, (value) **
-        V16 = get16();
-        L = RAM[V16];
-        H = RAM[V16 + 1];
-        break;
-      case 0x2B:                  //** DEC HL **
-        V16 = L + (256 * H);
-        V16--;
-        H = V16 / 256;
-        L = V16 & 255;
-        break;
-      case 0x2C:                  //** INC L **
-        cfs = Cf;
-        L = ADD8(L, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x2D:                  //** DEC L **
-        cfs = Cf;
-        L = SUB8(L, 1, 0);
-        Cf = cfs;
-        break;
-      case 0x2E:                  //** LD L, value **
-        L = get8();
-        break;
-      case 0x2f:                  //** CPL **
-        A = ~ A ;                //Invert all bits in A
-        Hf = true;
-        Nf = true;
-        break;
-      //********************************************
+          break;
+        case 0x29:                  //** ADD HL, HL **
+          V32 = (H * 256) + L;
+          if (bitRead(V32, 11) == 1) Hf = true; else Hf = false; //Half carry flag
+          V32 = V32 << 1;           //add it again
+          Cf = bitRead(V32, 16);    //** Update carry flag **  *
+          H = (V32 / 256) & 0xff;
+          L = V32 & 0xff;
+          Nf = false;               //False as it's an addition
+          break;
+        case 0x2A:                  //** LD HL, (value) **
+          V16 = get16();
+          L = RAM[V16];
+          H = RAM[V16 + 1];
+          break;
+        case 0x2B:                  //** DEC HL **
+          V16 = L + (256 * H);
+          V16--;
+          H = V16 / 256;
+          L = V16 & 255;
+          break;
+        case 0x2C:                  //** INC L **
+          cfs = Cf;
+          L = ADD8(L, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x2D:                  //** DEC L **
+          cfs = Cf;
+          L = SUB8(L, 1, 0);
+          Cf = cfs;
+          break;
+        case 0x2E:                  //** LD L, value **
+          L = get8();
+          break;
+        case 0x2f:                  //** CPL **
+          A = ~ A ;                //Invert all bits in A
+          Hf = true;
+          Nf = true;
+          break;
+        //********************************************
 
-      //********************************************
-      // Instructions 30 to 3F fully implemented
-      //********************************************
-      case 0x30:                  //**JR NC , value **
-        JR = get8();
-        if (Cf == false) {
-          if (JR < 128) {
-            PC += JR;               //Forward Jump
-          } else {
-            PC = PC - (256 - JR);   //Backward jump
+        //********************************************
+        // Instructions 30 to 3F fully implemented
+        //********************************************
+        case 0x30:                  //**JR NC , value **
+          JR = get8();
+          if (Cf == false) {
+            if (JR < 128) {
+              PC += JR;               //Forward Jump
+            } else {
+              PC = PC - (256 - JR);   //Backward jump
+            }
           }
-        }
-        break;
-      case 0x31:                  //** LD SP, VALUE **
-        SP = get16();
-        break;
-      case 0x32:                  //** LD (VALUE), A **
-        RAM[get16()] = A;
-        break;
-      case 0x33:                  //** INC SP **
-        SP++;
-        break;
-      case 0x34:                  //** INC (HL) **
-        cfs = Cf;
-        V8 = RAM[(H * 256) + L];             //Get value from memory
-        V8 = ADD8(V8, 1, 0);
-        RAM[(H * 256) + L] = V8;            //Save back
-        Cf = cfs;
-        break;
-      case 0x35:                  //** DEC (HL) **
-        cfs = Cf;
-        V8 = RAM[(H * 256) + L];             //Get value from memory
-        V8 = SUB8(V8, 1, 0);
-        RAM[(H * 256) + L] = V8;            //Save back
-        Cf = cfs;
-        break;
-      case 0x36:                  //** LD (HL), VALUE **
-        RAM[(H * 256) + L] = get8();
-        break;
-      case 0x37:                  //** SCF **
-        Cf = true;
-        Nf = false;
-        Hf = false;
-        break;
-      case 0x38:                  //** JR C , value ***
-        JR = get8();
-        if (Cf == true) {
-          if (JR < 128) {
-            PC += JR;               //Forward Jump
-          } else {
-            PC = PC - (256 - JR);   //Backward jump
-          }
-        }
-        break;
-      case 0x39:                  //** ADD HL, SP **
-        V32 = (H * 256) + L;
-        if (bitRead(V32, 11) == 1 && bitRead(SP, 11) == 1) Hf = true; else Hf = false; //Half carry flag
-        V32 += SP;
-        Cf = bitRead(V32, 16);    //** Update carry flag **  *
-        H = (V32 / 256) & 0xff;
-        L = V32 & 0xff;
-        Nf = false;               //False as it's an addition
-        break;
-      case 0x3A:                  //** LD A, (VALUE) **
-        A = RAM[get16()];
-        break;
-      case 0x3B:                  //** DEC SP **
-        SP--;
-        break;
-      case 0x3C:                  //** INC A **
-        cfs = Cf;
-        A = ADD8(A , 1, 0);
-        Cf = cfs;
-        break;
-      case 0x3D:                  //** DEC A **
-        cfs = Cf;
-        A = SUB8(A , 1, 0);
-        Cf = cfs;
-        break;
-      case 0x3E:                  //** LD A, VALUE **
-        A = get8();
-        break;
-      case 0x3f:                  //** CCF **
-        Cf = ! Cf;
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions 40 to 4F fully implemented
-      //********************************************
-      case 0x40:                  //** LD B , B **
-        break;                                //Does nothing
-      case 0x41:                  //** LD B, C **
-        B = C;
-        break;
-      case 0x42:                  //** LD B, D **
-        B = D;
-        break;
-      case 0x43:                  //** LD B, E **
-        B = E;
-        break;
-      case 0x44:                  //** LD B, H **
-        B = H;
-        break;
-      case 0x45:                  //** LD B, L **
-        B = L;
-        break;
-      case 0x46:                  //** LD B, (HL) **
-        B = RAM[(256 * H) + L];
-        break;
-      case 0x47:                  //** LD B, A **
-        B = A;
-        break;
-      case 0x48:                  //** LD C, B **
-        C = B;
-        break;
-      case 0x49:                  //** LD C, C **
-        break;                                            //Does nothing
-      case 0x4A:                  //** LD C , D **
-        C = D;
-        break;
-      case 0x4B:                  //**  LD C, E **
-        C = E;
-        break;
-      case 0x4C:                  //** LD C, H **
-        C = H;
-        break;
-      case 0x4D:                  //** LD C, L **
-        C = L;
-        break;
-      case 0x4E:                  //** LD C, (HL) **
-        C = RAM[(H * 256) + L];
-        break;
-      case 0x4F:                  //** LD C, A **
-        C = A;
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions 50 to 5F fully implemented
-      //********************************************
-      case 0x50:                  //** LD D, B **
-        D = B;
-        break;
-      case 0x51:                  //** LD D, C **
-        D = C;
-        break;
-      case 0x52:                  //** LD D, D **
-        break;                                    //Does nothing !
-      case 0x53:                  //** LD D, E **
-        D = E;
-        break;
-      case 0x54:                  //** LD D, H **
-        D = H;
-        break;
-      case 0x55:                  //**LD D, L **
-        D = L;
-        break;
-      case 0x56:                  //**LD D, (HL) **
-        D = RAM[(H * 256) + L];
-        break;
-      case 0x57:                  //** LD D, A **
-        D = A;
-        break;
-      case 0x58:                  //** LD E, B **
-        E = B;
-        break;
-      case 0x59:                  //** LD E, C **
-        E = C;
-        break;
-      case 0x5A:                  //** LD E, D **
-        E = D;
-        break;
-      case 0x5B:                  //** LD E, E **
-        break;                                        //Does nothing
-      case 0x5C:                  //** LD E, H **
-        E = H;
-        break;
-      case 0x5D:                  //** LD E, L **
-        E = L;
-        break;
-      case 0x5E:                  //** LD E, (HL) **
-        E = RAM[(H * 256) + L];
-        break;
-      case 0x5F:                  //** LD E, A **
-        E = A;
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions 60 to 6F fully implemented
-      //********************************************
-      case 0x60:                  //** LD H, B **
-        H = B;
-        break;
-      case 0x61:                  //** LD H, C **
-        H = C;
-        break;
-      case 0x62:                  //** LD H, D **
-        H = D;
-        break;
-      case 0x63:                  //** LD H, E **
-        H = E;
-        break;
-      case 0x64:                  //** LD H, H **
-        break;
-      case 0x65:                  //** LD H, L **
-        H = L;
-        break;
-      case 0x66:                  //** LD H, (HL) **
-        H = RAM[(256 * H) + L];
-        break;
-      case 0x67:                  //** LD H, A **
-        H = A;
-        break;
-      case 0x68:                  //** LD L, B **
-        L = B;
-        break;
-      case 0x69:                  //** LD L, C **
-        L = C;
-        break;
-      case 0x6A:                  //** LD L, D **
-        L = D;
-        break;
-      case 0x6B:                  //** LD L, E **
-        L = E;
-        break;
-      case 0x6C:                  //** LD L, H **
-        L = H;
-        break;
-      case 0x6D:                  //** LD L, L **
-        break;
-      case 0x6E:                  //** LD L, (HL) **
-        L = RAM[(256 * H) + L];
-        break;
-      case 0x6F:                  //** LD L, A **
-        L = A;
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions 70 to 7F fully implemented
-      //********************************************
-      case 0x70:                  //** LD (HL), B **
-        RAM[(H * 256) + L] = B;
-        break;
-      case 0x71:                  //** LD (HL), C **
-        RAM[(H * 256) + L] = C;
-        break;
-      case 0x72:                  //** LD (HL), D **
-        RAM[(H * 256) + L] = D;
-        break;
-      case 0x73:                  //** LD (HL), E **
-        RAM[(H * 256) + L] = E;
-        break;
-      case 0x74:                  //** LD (HL), H **
-        RAM[(H * 256) + L] = H;
-        break;
-      case 0x75:                  //** LD (HL), L **
-        RAM[(H * 256) + L] = L;
-        break;
-      case 0x76:                  //** HALT **
-        RUN = false;
-        break;
-      case 0x77:                  //** LD (HL), A **
-        RAM[(H * 256) + L] = A;
-        break;
-      case 0x78:                  //** LD A, B **
-        A = B;
-        break;
-      case 0x79:                  //** LD A, C **
-        A = C;
-        break;
-      case 0x7A:                  //** LD A, D **
-        A = D;
-        break;
-      case 0x7B:                  //** LD A, E **
-        A = E;
-        break;
-      case 0x7C:                  //** LD A, H **
-        A = H;
-        break;
-      case 0x7D:                  //** LD A, L **
-        A = L;
-        break;
-      case 0x7E:                  //** LD A, (HL) **
-        A = RAM[(H * 256) + L];
-        break;
-      case 0x7f:                  //** LD A, A **
-        break;                                      //useless instruction
-      //********************************************
-
-      //********************************************
-      // Instructions 80 to 8F fully implemented
-      //********************************************
-      case 0x80:                  //** ADD A, B **
-        A = ADD8(A, B, 0);
-        break;
-      case 0x81:                  //** ADD A, C **
-        A = ADD8(A, C, 0);
-        break;
-      case 0x82:                  //** ADD A, D **
-        A = ADD8(A, D, 0);
-        break;
-      case 0x83:                  //** ADD A, E **
-        A = ADD8(A, E, 0);
-        break;
-      case 0x84:                  //** ADD A, H **
-        A = ADD8(A, H, 0);
-        break;
-      case 0x85:                  //** ADD A, L **
-        A = ADD8(A, L, 0);
-        break;
-      case 0x86:                  //** ADD A, (HL) **
-        V8 = RAM[(H * 256) + L];
-        A = ADD8(A, V8, 0);
-        break;
-      case 0x87:                  //** ADD A, A **
-        A = ADD8(A, A, 0);
-        break;
-      case 0x88:                  //** ADC A, B **
-        A = ADD8(A, B, Cf);
-        break;
-      case 0x89:                  //** ADC A, C **
-        A = ADD8(A, C, Cf);
-        break;
-      case 0x8A:                  //** ADC A, D **
-        A = ADD8(A, D, Cf);
-        break;
-      case 0x8B:                  //** ADC A, E **
-        A = ADD8(A, E, Cf);
-        break;
-      case 0x8C:                  //** ADC A, H **
-        A = ADD8(A, H, Cf);
-        break;
-      case 0x8D:                  //** ADC A, L **
-        A = ADD8(A, L, Cf);
-        break;
-      case 0x8E:                  //** ADC A, (HL) **
-        V8 = RAM[(H * 256) + L];
-        A = ADD8(A, V8, Cf);
-        break;
-      case 0x8F:                  //** ADC A, A **
-        A = ADD8(A, A, Cf);
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions 90 to 9F fully implemented
-      //********************************************
-      case 0x90:                  //** SUB B **
-        A = SUB8(A, B, 0);
-        break;
-      case 0x91:                  //** SUB C **
-        A = SUB8(A, C, 0);
-        break;
-      case 0x92:                  //** SUB D **
-        A = SUB8(A, D, 0);
-        break;
-      case 0x93:                  //** SUB E **
-        A = SUB8(A, E, 0);
-        break;
-      case 0x94:                  //** SUB H **
-        A = SUB8(A, H, 0);
-        break;
-      case 0x95:                  //** SUB L **
-        A = SUB8(A, L, 0);
-        break;
-      case 0x96:                  //** SUB (HL) **
-        V8 = RAM[(H * 256) + L];
-        A = SUB8(A, V8, 0);
-        break;
-      case 0x97:                  //** SUB A **
-        A = SUB8(A, A, 0);
-        break;
-      case 0x98:                    //** SBC A, B ***
-        A = SUB8(A, B, Cf);
-        break;
-      case 0x99:                    //** SBC A, C ***
-        A = SUB8(A, C, Cf);
-        break;
-      case 0x9A:                    //** SBC A, D ***
-        A = SUB8(A, D, Cf);
-        break;
-      case 0x9B:                    //** SBC A, E ***
-        A = SUB8(A, E, Cf);
-        break;
-      case 0x9C:                    //** SBC A, H ***
-        A = SUB8(A, H, Cf);
-        break;
-      case 0x9D:                    //** SBC A, L ***
-        A = SUB8(A, L, Cf);
-        break;
-      case 0x9E:                    //** SBC A, (HL) ***
-        V8 = RAM[(H * 256) + L];
-        A = SUB8(A, V8, Cf);
-        break;
-      case 0x9F:                    //** SBC A, A ***
-        A = SUB8(A, A, Cf);
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions A0 to AF fully implemented
-      //********************************************
-      case 0xA0:                  //** AND B **
-        A = A & B;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA1:                  //** AND C **
-        A = A & C;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA2:                  //** AND D **
-        A = A & D;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA3:                  //** AND E **
-        A = A & E;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA4:                  //** AND H **
-        A = A & H;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA5:                  //** AND L **
-        A = A & L;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA6:                  //** AND (HL) **
-        A = A & RAM[(H * 256) + L];
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA7:                  //** AND A **
-        A = A & A;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA8:                  //** XOR B **
-        A = A ^ B;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xA9:                  //** XOR C **
-        A = A ^ C;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAA:                  //** XOR D **
-        A = A ^ D;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAB:                  //** XOR E **
-        A = A ^ E;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAC:                  //** XOR H **
-        A = A ^ H;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAD:                  //** XOR L **
-        A = A ^ L;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAE:                  //** XOR (HL) **
-        A = A ^ RAM[(H * 256) + L];
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xAF:                  //** XOR A **
-        A = 0;
-        Sf = false;
-        Zf = true;
-        Hf = false;
-        Pf = true;
-        Nf = false;
-        Cf = false;
-        break;
-      //********************************************
-
-      //********************************************
-      // Instructions B0 to BF fully implemented
-      //********************************************
-      case 0xB0:                  //*** OR B **
-        A = A | B;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB1:                  //** OR C **
-        A = A | C;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB2:                  //** OR D **
-        A = A | D;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB3:                  //** OR E **
-        A = A | E;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB4:                  //** OR H **
-        A = A | H;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB5:                  //** OR L **
-        A = A | L;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0XB6:                  //** OR (HL) **
-        A = A | RAM[(H * 256) + L];
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0XB7:                  //** OR A **
-        A = A | A;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xB8:                  //** CP B **
-        SUB8(A, B, 0);            //Update flags
-        break;
-      case 0xB9:                 //** CP C **
-        SUB8(A, C, 0);           //Update flags
-        break;
-      case 0xBA:                  //** CP D **
-        SUB8(A, D, 0);            //Update flags
-        break;
-      case 0xBB:                //** CP E **
-        SUB8(A, E, 0);            //Update flags
-        break;
-      case 0xBC:                  //** CP H **
-        SUB8(A, H, 0);            //Update flags
-        break;
-      case 0xBD:                  //** CP L **
-        SUB8(A, L, 0);            //Update flagss
-        break;
-      case 0xBE:                  //** CP (HL) **
-        SUB8(A, RAM[(H * 256) + L], 0);  //Update flags
-        break;
-      case 0xBF:                  //** CP A **
-        SUB8(A, A, 0);            //Update flags
-        break;
-      //********************************************
-      // Instructions C0 to CF fully implemented
-      //********************************************
-      case 0xC0:                  //** RET NZ **
-        if (Zf == false) {
-          PC = RAM[SP];
+          break;
+        case 0x31:                  //** LD SP, VALUE **
+          SP = get16();
+          break;
+        case 0x32:                  //** LD (VALUE), A **
+          RAM[get16()] = A;
+          break;
+        case 0x33:                  //** INC SP **
           SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xC1:                  //** POP BC **
-        C = RAM[SP];
-        SP++;
-        B = RAM[SP];
-        SP++;
-        break;
-      case 0xC2:                  //** JP NZ **
-        V16 = get16();
-        if (Zf == false) PC = V16; //Jump to absolute address if not zero
-        break;
-      case 0xC3:                  //** JP **
-        PC = get16();             //Get 2 byte address
-        break;
-      case 0xC4:                  //** CALL NZ, value **
-        V16 = get16();
-        if (Zf == false) {
+          break;
+        case 0x34:                  //** INC (HL) **
+          cfs = Cf;
+          V8 = RAM[(H * 256) + L];             //Get value from memory
+          V8 = ADD8(V8, 1, 0);
+          RAM[(H * 256) + L] = V8;            //Save back
+          Cf = cfs;
+          break;
+        case 0x35:                  //** DEC (HL) **
+          cfs = Cf;
+          V8 = RAM[(H * 256) + L];             //Get value from memory
+          V8 = SUB8(V8, 1, 0);
+          RAM[(H * 256) + L] = V8;            //Save back
+          Cf = cfs;
+          break;
+        case 0x36:                  //** LD (HL), VALUE **
+          RAM[(H * 256) + L] = get8();
+          break;
+        case 0x37:                  //** SCF **
+          Cf = true;
+          Nf = false;
+          Hf = false;
+          break;
+        case 0x38:                  //** JR C , value ***
+          JR = get8();
+          if (Cf == true) {
+            if (JR < 128) {
+              PC += JR;               //Forward Jump
+            } else {
+              PC = PC - (256 - JR);   //Backward jump
+            }
+          }
+          break;
+        case 0x39:                  //** ADD HL, SP **
+          V32 = (H * 256) + L;
+          if (bitRead(V32, 11) == 1 && bitRead(SP, 11) == 1) Hf = true; else Hf = false; //Half carry flag
+          V32 += SP;
+          Cf = bitRead(V32, 16);    //** Update carry flag **  *
+          H = (V32 / 256) & 0xff;
+          L = V32 & 0xff;
+          Nf = false;               //False as it's an addition
+          break;
+        case 0x3A:                  //** LD A, (VALUE) **
+          A = RAM[get16()];
+          break;
+        case 0x3B:                  //** DEC SP **
           SP--;
-          RAM[SP] = PC / 256;       //Push program counter onto the stack
+          break;
+        case 0x3C:                  //** INC A **
+          cfs = Cf;
+          A = ADD8(A , 1, 0);
+          Cf = cfs;
+          break;
+        case 0x3D:                  //** DEC A **
+          cfs = Cf;
+          A = SUB8(A , 1, 0);
+          Cf = cfs;
+          break;
+        case 0x3E:                  //** LD A, VALUE **
+          A = get8();
+          break;
+        case 0x3f:                  //** CCF **
+          Cf = ! Cf;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 40 to 4F fully implemented
+        //********************************************
+        case 0x40:                  //** LD B , B **
+          break;                                //Does nothing
+        case 0x41:                  //** LD B, C **
+          B = C;
+          break;
+        case 0x42:                  //** LD B, D **
+          B = D;
+          break;
+        case 0x43:                  //** LD B, E **
+          B = E;
+          break;
+        case 0x44:                  //** LD B, H **
+          B = H;
+          break;
+        case 0x45:                  //** LD B, L **
+          B = L;
+          break;
+        case 0x46:                  //** LD B, (HL) **
+          B = RAM[(256 * H) + L];
+          break;
+        case 0x47:                  //** LD B, A **
+          B = A;
+          break;
+        case 0x48:                  //** LD C, B **
+          C = B;
+          break;
+        case 0x49:                  //** LD C, C **
+          break;                                            //Does nothing
+        case 0x4A:                  //** LD C , D **
+          C = D;
+          break;
+        case 0x4B:                  //**  LD C, E **
+          C = E;
+          break;
+        case 0x4C:                  //** LD C, H **
+          C = H;
+          break;
+        case 0x4D:                  //** LD C, L **
+          C = L;
+          break;
+        case 0x4E:                  //** LD C, (HL) **
+          C = RAM[(H * 256) + L];
+          break;
+        case 0x4F:                  //** LD C, A **
+          C = A;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 50 to 5F fully implemented
+        //********************************************
+        case 0x50:                  //** LD D, B **
+          D = B;
+          break;
+        case 0x51:                  //** LD D, C **
+          D = C;
+          break;
+        case 0x52:                  //** LD D, D **
+          break;                                    //Does nothing !
+        case 0x53:                  //** LD D, E **
+          D = E;
+          break;
+        case 0x54:                  //** LD D, H **
+          D = H;
+          break;
+        case 0x55:                  //**LD D, L **
+          D = L;
+          break;
+        case 0x56:                  //**LD D, (HL) **
+          D = RAM[(H * 256) + L];
+          break;
+        case 0x57:                  //** LD D, A **
+          D = A;
+          break;
+        case 0x58:                  //** LD E, B **
+          E = B;
+          break;
+        case 0x59:                  //** LD E, C **
+          E = C;
+          break;
+        case 0x5A:                  //** LD E, D **
+          E = D;
+          break;
+        case 0x5B:                  //** LD E, E **
+          break;                                        //Does nothing
+        case 0x5C:                  //** LD E, H **
+          E = H;
+          break;
+        case 0x5D:                  //** LD E, L **
+          E = L;
+          break;
+        case 0x5E:                  //** LD E, (HL) **
+          E = RAM[(H * 256) + L];
+          break;
+        case 0x5F:                  //** LD E, A **
+          E = A;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 60 to 6F fully implemented
+        //********************************************
+        case 0x60:                  //** LD H, B **
+          H = B;
+          break;
+        case 0x61:                  //** LD H, C **
+          H = C;
+          break;
+        case 0x62:                  //** LD H, D **
+          H = D;
+          break;
+        case 0x63:                  //** LD H, E **
+          H = E;
+          break;
+        case 0x64:                  //** LD H, H **
+          break;
+        case 0x65:                  //** LD H, L **
+          H = L;
+          break;
+        case 0x66:                  //** LD H, (HL) **
+          H = RAM[(256 * H) + L];
+          break;
+        case 0x67:                  //** LD H, A **
+          H = A;
+          break;
+        case 0x68:                  //** LD L, B **
+          L = B;
+          break;
+        case 0x69:                  //** LD L, C **
+          L = C;
+          break;
+        case 0x6A:                  //** LD L, D **
+          L = D;
+          break;
+        case 0x6B:                  //** LD L, E **
+          L = E;
+          break;
+        case 0x6C:                  //** LD L, H **
+          L = H;
+          break;
+        case 0x6D:                  //** LD L, L **
+          break;
+        case 0x6E:                  //** LD L, (HL) **
+          L = RAM[(256 * H) + L];
+          break;
+        case 0x6F:                  //** LD L, A **
+          L = A;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 70 to 7F fully implemented
+        //********************************************
+        case 0x70:                  //** LD (HL), B **
+          RAM[(H * 256) + L] = B;
+          break;
+        case 0x71:                  //** LD (HL), C **
+          RAM[(H * 256) + L] = C;
+          break;
+        case 0x72:                  //** LD (HL), D **
+          RAM[(H * 256) + L] = D;
+          break;
+        case 0x73:                  //** LD (HL), E **
+          RAM[(H * 256) + L] = E;
+          break;
+        case 0x74:                  //** LD (HL), H **
+          RAM[(H * 256) + L] = H;
+          break;
+        case 0x75:                  //** LD (HL), L **
+          RAM[(H * 256) + L] = L;
+          break;
+        case 0x76:                  //** HALT **
+          RUN = false;
+          break;
+        case 0x77:                  //** LD (HL), A **
+          RAM[(H * 256) + L] = A;
+          break;
+        case 0x78:                  //** LD A, B **
+          A = B;
+          break;
+        case 0x79:                  //** LD A, C **
+          A = C;
+          break;
+        case 0x7A:                  //** LD A, D **
+          A = D;
+          break;
+        case 0x7B:                  //** LD A, E **
+          A = E;
+          break;
+        case 0x7C:                  //** LD A, H **
+          A = H;
+          break;
+        case 0x7D:                  //** LD A, L **
+          A = L;
+          break;
+        case 0x7E:                  //** LD A, (HL) **
+          A = RAM[(H * 256) + L];
+          break;
+        case 0x7f:                  //** LD A, A **
+          break;                                      //useless instruction
+        //********************************************
+
+        //********************************************
+        // Instructions 80 to 8F fully implemented
+        //********************************************
+        case 0x80:                  //** ADD A, B **
+          A = ADD8(A, B, 0);
+          break;
+        case 0x81:                  //** ADD A, C **
+          A = ADD8(A, C, 0);
+          break;
+        case 0x82:                  //** ADD A, D **
+          A = ADD8(A, D, 0);
+          break;
+        case 0x83:                  //** ADD A, E **
+          A = ADD8(A, E, 0);
+          break;
+        case 0x84:                  //** ADD A, H **
+          A = ADD8(A, H, 0);
+          break;
+        case 0x85:                  //** ADD A, L **
+          A = ADD8(A, L, 0);
+          break;
+        case 0x86:                  //** ADD A, (HL) **
+          V8 = RAM[(H * 256) + L];
+          A = ADD8(A, V8, 0);
+          break;
+        case 0x87:                  //** ADD A, A **
+          A = ADD8(A, A, 0);
+          break;
+        case 0x88:                  //** ADC A, B **
+          A = ADD8(A, B, Cf);
+          break;
+        case 0x89:                  //** ADC A, C **
+          A = ADD8(A, C, Cf);
+          break;
+        case 0x8A:                  //** ADC A, D **
+          A = ADD8(A, D, Cf);
+          break;
+        case 0x8B:                  //** ADC A, E **
+          A = ADD8(A, E, Cf);
+          break;
+        case 0x8C:                  //** ADC A, H **
+          A = ADD8(A, H, Cf);
+          break;
+        case 0x8D:                  //** ADC A, L **
+          A = ADD8(A, L, Cf);
+          break;
+        case 0x8E:                  //** ADC A, (HL) **
+          V8 = RAM[(H * 256) + L];
+          A = ADD8(A, V8, Cf);
+          break;
+        case 0x8F:                  //** ADC A, A **
+          A = ADD8(A, A, Cf);
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions 90 to 9F fully implemented
+        //********************************************
+        case 0x90:                  //** SUB B **
+          A = SUB8(A, B, 0);
+          break;
+        case 0x91:                  //** SUB C **
+          A = SUB8(A, C, 0);
+          break;
+        case 0x92:                  //** SUB D **
+          A = SUB8(A, D, 0);
+          break;
+        case 0x93:                  //** SUB E **
+          A = SUB8(A, E, 0);
+          break;
+        case 0x94:                  //** SUB H **
+          A = SUB8(A, H, 0);
+          break;
+        case 0x95:                  //** SUB L **
+          A = SUB8(A, L, 0);
+          break;
+        case 0x96:                  //** SUB (HL) **
+          V8 = RAM[(H * 256) + L];
+          A = SUB8(A, V8, 0);
+          break;
+        case 0x97:                  //** SUB A **
+          A = SUB8(A, A, 0);
+          break;
+        case 0x98:                    //** SBC A, B ***
+          A = SUB8(A, B, Cf);
+          break;
+        case 0x99:                    //** SBC A, C ***
+          A = SUB8(A, C, Cf);
+          break;
+        case 0x9A:                    //** SBC A, D ***
+          A = SUB8(A, D, Cf);
+          break;
+        case 0x9B:                    //** SBC A, E ***
+          A = SUB8(A, E, Cf);
+          break;
+        case 0x9C:                    //** SBC A, H ***
+          A = SUB8(A, H, Cf);
+          break;
+        case 0x9D:                    //** SBC A, L ***
+          A = SUB8(A, L, Cf);
+          break;
+        case 0x9E:                    //** SBC A, (HL) ***
+          V8 = RAM[(H * 256) + L];
+          A = SUB8(A, V8, Cf);
+          break;
+        case 0x9F:                    //** SBC A, A ***
+          A = SUB8(A, A, Cf);
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions A0 to AF fully implemented
+        //********************************************
+        case 0xA0:                  //** AND B **
+          A = A & B;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA1:                  //** AND C **
+          A = A & C;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA2:                  //** AND D **
+          A = A & D;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA3:                  //** AND E **
+          A = A & E;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA4:                  //** AND H **
+          A = A & H;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA5:                  //** AND L **
+          A = A & L;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA6:                  //** AND (HL) **
+          A = A & RAM[(H * 256) + L];
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA7:                  //** AND A **
+          A = A & A;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA8:                  //** XOR B **
+          A = A ^ B;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xA9:                  //** XOR C **
+          A = A ^ C;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAA:                  //** XOR D **
+          A = A ^ D;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAB:                  //** XOR E **
+          A = A ^ E;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAC:                  //** XOR H **
+          A = A ^ H;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAD:                  //** XOR L **
+          A = A ^ L;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAE:                  //** XOR (HL) **
+          A = A ^ RAM[(H * 256) + L];
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xAF:                  //** XOR A **
+          A = 0;
+          Sf = false;
+          Zf = true;
+          Hf = false;
+          Pf = true;
+          Nf = false;
+          Cf = false;
+          break;
+        //********************************************
+
+        //********************************************
+        // Instructions B0 to BF fully implemented
+        //********************************************
+        case 0xB0:                  //*** OR B **
+          A = A | B;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB1:                  //** OR C **
+          A = A | C;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB2:                  //** OR D **
+          A = A | D;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB3:                  //** OR E **
+          A = A | E;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB4:                  //** OR H **
+          A = A | H;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB5:                  //** OR L **
+          A = A | L;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0XB6:                  //** OR (HL) **
+          A = A | RAM[(H * 256) + L];
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0XB7:                  //** OR A **
+          A = A | A;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xB8:                  //** CP B **
+          SUB8(A, B, 0);            //Update flags
+          break;
+        case 0xB9:                 //** CP C **
+          SUB8(A, C, 0);           //Update flags
+          break;
+        case 0xBA:                  //** CP D **
+          SUB8(A, D, 0);            //Update flags
+          break;
+        case 0xBB:                //** CP E **
+          SUB8(A, E, 0);            //Update flags
+          break;
+        case 0xBC:                  //** CP H **
+          SUB8(A, H, 0);            //Update flags
+          break;
+        case 0xBD:                  //** CP L **
+          SUB8(A, L, 0);            //Update flagss
+          break;
+        case 0xBE:                  //** CP (HL) **
+          SUB8(A, RAM[(H * 256) + L], 0);  //Update flags
+          break;
+        case 0xBF:                  //** CP A **
+          SUB8(A, A, 0);            //Update flags
+          break;
+        //********************************************
+        // Instructions C0 to CF fully implemented
+        //********************************************
+        case 0xC0:                  //** RET NZ **
+          if (Zf == false) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xC1:                  //** POP BC **
+          C = RAM[SP];
+          SP++;
+          B = RAM[SP];
+          SP++;
+          break;
+        case 0xC2:                  //** JP NZ **
+          V16 = get16();
+          if (Zf == false) PC = V16; //Jump to absolute address if not zero
+          break;
+        case 0xC3:                  //** JP **
+          PC = get16();             //Get 2 byte address
+          break;
+        case 0xC4:                  //** CALL NZ, value **
+          V16 = get16();
+          if (Zf == false) {
+            SP--;
+            RAM[SP] = PC / 256;       //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        case 0xC5:                    //** PUSH BC **
           SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      case 0xC5:                    //** PUSH BC **
-        SP--;
-        RAM[SP] = B;
-        SP--;
-        RAM[SP] = C;
-        break;
-      case 0xC6:                  //** ADD A, value **
-        V8 = get8();
-        A = ADD8(A, V8, 0);
-        break;
-      case 0xC7:                  //** RST 00 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x00;                 //Put 0c00 in Program Counter
-        break;
-      case 0xC8:                  //** RET Z **
-        if (Zf == true) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xC9:                  //** RET **
-        PC = RAM[SP];
-        SP++;
-        PC += 256 * RAM[SP];      //POP return address off the stack
-        SP++;
-        break;
-      case 0xCA:                  //** JP Z, value **
-        V16 = get16();
-        if (Zf == true) PC = V16;
-        break;
-      //*** CB Extended bit instrucions ***
-      case 0xCB:
-        CPU_CB();
-        break;
-      //********************************************
-      case 0xCC:                  //** CALL Z, value **
-        V16 = get16();
-        if (Zf == true) {
+          RAM[SP] = B;
+          SP--;
+          RAM[SP] = C;
+          break;
+        case 0xC6:                  //** ADD A, value **
+          V8 = get8();
+          A = ADD8(A, V8, 0);
+          break;
+        case 0xC7:                  //** RST 00 **
           SP--;
           RAM[SP] = PC / 256;        //Push program counter onto the stack
           SP--;
           RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      case 0xCD:                  //** CALL value **
-        V16 = get16();
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = V16;                 //Put call address in Program Counter
-        break;
-      case 0xCE:                  //** ADC A, value **
-        V8 = get8();
-        A = ADD8(A, V8, Cf);
-        break;
-      case 0xCF:                  //** RST 08 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x08;                 //Put 0x08 in Program Counter
-        break;
-      //********************************************
-      // Instructions D0 to DF fully implemented
-      //********************************************
-      case 0xD0:                  //** RET NC **
-        if (Cf == false) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xD1:                  //** POP DE **
-        E = RAM[SP];
-        SP++;
-        D = RAM[SP];
-        SP++;
-        break;
-      case 0xD2:                  //** JP NC, value **
-        V16 = get16();
-        if (Cf == false) PC = V16;
-        break;
-      case 0xD3:                  //** OUT PORT, A **
-        portOut(get8(), A);
-        break;
-      case 0xD4:                  //** CALL NC, value **
-        V16 = get16();
-        if (Cf == false) {
-          SP--;
-          RAM[SP] = PC / 256;        //Push program counter onto the stack
-          SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      case 0xD5:                  //** PUSH DE **
-        SP--;
-        RAM[SP] = D;
-        SP--;
-        RAM[SP] = E;
-        break;
-      case 0xD6:                  //** SUB value **
-        V8 = get8();
-        A = SUB8(A, V8, 0);
-        break;
-      case 0xD7:                  //** RST 10 **
-        SP--;
-        RAM[SP] = PC / 256;       //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x10;                 //Put 0x10 in Program Counter
-        break;
-      case 0xD8:                  //** RET C **
-        if (Cf == true) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xD9:                  //** EXX **
-        V8 = Ba;
-        Ba = B;
-        B = V8;
-        V8 = Ca;
-        Ca = C;
-        C = V8;
-        V8 = Da;
-        Da = D;
-        D = V8;
-        V8 = Ea;
-        Ea = E;
-        E = V8;
-        V8 = Ha;
-        Ha = H;
-        H = V8;
-        V8 = La;
-        La = L;
-        L = V8;
-        break;
-      case 0xDA:                  //** JP C, value **
-        V16 = get16();
-        if (Cf == true) PC = V16;
-        break;
-      case 0xDB:                  //** IN A, PORT **
-        A = portIn(get8());
-        break;
-      case 0xDC:                  //** CALL C, value **
-        V16 = get16();
-        if (Cf == true) {
-          SP--;
-          RAM[SP] = PC / 256;        //Push program counter onto the stack
-          SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      //*** DD IX Extended instrucions ***
-      case 0xDD:
-        CPU_DD();
-        break;
-
-      //********************************************
-      case 0xDE:                    //** SBC A, value ***
-        V8 = get8();
-        A = SUB8(A, V8, Cf);
-        break;
-      case 0xDF:                  //** RST 18 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x18;                 //Put 0x18 in Program Counter
-        break;
-      //********************************************
-      // Instructions E0 to EF fully implemented
-      //********************************************
-      case 0xE0:                  //** RET PO **
-        if (Pf == false) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xE1:                  //** POP HL **
-        L = RAM[SP];
-        SP++;
-        H = RAM[SP];
-        SP++;
-        break;
-      case 0xE2:                  //** JP PO, value **
-        V16 = get16();
-        if (Pf == false) PC = V16;
-        break;
-      case 0xE3:                  //** EX (SP), HL **
-        V8 = RAM[SP];
-        RAM[SP] = L;
-        L = V8;
-        V8 = RAM[SP + 1];
-        RAM[SP + 1] = H;
-        H = V8;
-        break;
-      case 0xE4:                  //** CALL PO, value **
-        V16 = get16();
-        if (Pf == false) {
-          SP--;
-          RAM[SP] = PC / 256;       //Push program counter onto the stack
-          SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      case 0xE5:                  //** PUSH HL **
-        SP--;
-        RAM[SP] = H;
-        SP--;
-        RAM[SP] = L;
-        break;
-      case 0xE6:                  //** AND VALUE **
-        V8 = get8();
-        A = A & V8;
-        Cf = false;
-        Nf = false;
-        calcP(A);
-        Hf = true;
-        if (A == 0) Zf = true; else Zf = false;;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xE7:                  //** RST 20 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x20;                 //Put 0x20 in Program Counter
-        break;
-      case 0xE8:                  //** RET PE **
-        if (Pf == true) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xE9:                  //** JP (HL) **
-        PC = (H * 256) + L;
-        break;
-      case 0xEA:                  //** JP PE, value **
-        V16 = get16();
-        if (Pf == true) PC = V16;
-        break;
-      case 0xEB:                  //** EX DE, HL **
-        V8 = H;
-        H = D;
-        D = V8;
-        V8 = L;
-        L = E;
-        E = V8;
-        break;
-      case 0xEC:                  //** CALL PE, value **
-        V16 = get16();
-        if (Pf == true) {
-          SP--;
-          RAM[SP] = PC / 256;        //Push program counter onto the stack
-          SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      //*** ED Extended instrucions ***
-      case 0xED:
-        CPU_ED();
-        break;
-      case 0xEE:                  //** XOR value **
-        V8 = get8();
-        A = A ^ V8;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xEF:                  //** RST 28 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x28;                 //Put 0x28 in Program Counter
-        break;
-      //********************************************
-      // Instructions F0 to FF
-      //********************************************
-      case 0xF0:                  //** RET P **
-        if (Sf == false) {
-          PC = RAM[SP];
-          SP++;
-          PC += 256 * RAM[SP];    //POP return address off the stack
-          SP++;
-        }
-        break;
-      case 0xF1:                  //** POP AF **
-        Fl = RAM[SP];
-        SP++;
-        A = RAM[SP];
-        SP++;
-        Sf = bitRead(Fl, 7);
-        Zf = bitRead(Fl, 6);
-        Hf = bitRead(Fl, 4);
-        Pf = bitRead(Fl, 2);
-        Nf = bitRead(Fl, 1);
-        Cf = bitRead(Fl, 0);
-        break;
-      case 0xF2:                  //** JP P, value **
-        V16 = get16();
-        if (Sf == false) PC = V16;
-        break;
-      case 0xF3:                  //** DI **
-        intE = false;                //Disable interrupts
-        break;
-      case 0xF4:                  //** CALL P, value **
-        V16 = get16();
-        if (Sf == false) {
-          SP--;
-          RAM[SP] = PC / 256;       //Push program counter onto the stack
-          SP--;
-          RAM[SP] = PC & 255;
-          PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      case 0xF5:                  //** PUSH AF **
-        bitWrite(Fl, 7 , Sf);
-        bitWrite(Fl, 6 , Zf);
-        bitWrite(Fl, 4 , Hf);
-        bitWrite(Fl, 2 , Pf);
-        bitWrite(Fl, 1 , Nf);
-        bitWrite(Fl, 0 , Cf);
-        SP--;
-        RAM[SP] = A;
-        SP--;
-        RAM[SP] = Fl;
-        break;
-      case 0xF6:                  //*** OR value **
-        V8 = get8();
-        A = A | V8;
-        Cf = false;
-        Nf - false;
-        calcP(A);
-        Hf = false;
-        if (A == 0) Zf = true; else Zf = false;
-        Sf = bitRead(A, 7);
-        break;
-      case 0xF7:                  //** RST 30 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x30;                 //Put 0x30 in Program Counter
-        break;
-      case 0xF8:                  //** RET M **
-        if (Sf == true ) {
+          PC = 0x00;                 //Put 0c00 in Program Counter
+          break;
+        case 0xC8:                  //** RET Z **
+          if (Zf == true) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xC9:                  //** RET **
           PC = RAM[SP];
           SP++;
           PC += 256 * RAM[SP];      //POP return address off the stack
           SP++;
-        }
-        break;
-      case 0xF9:                  //** LD SP, HL **
-        SP = (H * 256) + L;
-        break;
-      case 0xFA:                  //** JP M, value **
-        V16 = get16();
-        if (Sf == true) PC = V16;
-        break;
-      case 0xFB:                  //** EI **
-        intE = true;
-        break;
-      case 0xFC:                  //** CALL M, value **
-        V16 = get16();
-        if (Sf == true) {
+          break;
+        case 0xCA:                  //** JP Z, value **
+          V16 = get16();
+          if (Zf == true) PC = V16;
+          break;
+        //*** CB Extended bit instrucions ***
+        case 0xCB:
+          CPU_CB();
+          break;
+        //********************************************
+        case 0xCC:                  //** CALL Z, value **
+          V16 = get16();
+          if (Zf == true) {
+            SP--;
+            RAM[SP] = PC / 256;        //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        case 0xCD:                  //** CALL value **
+          V16 = get16();
           SP--;
           RAM[SP] = PC / 256;        //Push program counter onto the stack
           SP--;
           RAM[SP] = PC & 255;
           PC = V16;                 //Put call address in Program Counter
-        }
-        break;
-      //*** FD Extended Instructions ***
-      case 0xFD:
-        CPU_FD();
-        break;
-      //********************************************
-      case 0xFE:                  //** CP A, value **
-        V8 = get8();
-        SUB8(A, V8, 0);            //Update flags
-        break;
-      case 0xFF:                  //** RST 38 **
-        SP--;
-        RAM[SP] = PC / 256;        //Push program counter onto the stack
-        SP--;
-        RAM[SP] = PC & 255;
-        PC = 0x38;                 //Put 0x38 in Program Counter
-        break;
+          break;
+        case 0xCE:                  //** ADC A, value **
+          V8 = get8();
+          A = ADD8(A, V8, Cf);
+          break;
+        case 0xCF:                  //** RST 08 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x08;                 //Put 0x08 in Program Counter
+          break;
+        //********************************************
+        // Instructions D0 to DF fully implemented
+        //********************************************
+        case 0xD0:                  //** RET NC **
+          if (Cf == false) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xD1:                  //** POP DE **
+          E = RAM[SP];
+          SP++;
+          D = RAM[SP];
+          SP++;
+          break;
+        case 0xD2:                  //** JP NC, value **
+          V16 = get16();
+          if (Cf == false) PC = V16;
+          break;
+        case 0xD3:                  //** OUT PORT, A **
+          portOut(get8(), A);
+          break;
+        case 0xD4:                  //** CALL NC, value **
+          V16 = get16();
+          if (Cf == false) {
+            SP--;
+            RAM[SP] = PC / 256;        //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        case 0xD5:                  //** PUSH DE **
+          SP--;
+          RAM[SP] = D;
+          SP--;
+          RAM[SP] = E;
+          break;
+        case 0xD6:                  //** SUB value **
+          V8 = get8();
+          A = SUB8(A, V8, 0);
+          break;
+        case 0xD7:                  //** RST 10 **
+          SP--;
+          RAM[SP] = PC / 256;       //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x10;                 //Put 0x10 in Program Counter
+          break;
+        case 0xD8:                  //** RET C **
+          if (Cf == true) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xD9:                  //** EXX **
+          V8 = Ba;
+          Ba = B;
+          B = V8;
+          V8 = Ca;
+          Ca = C;
+          C = V8;
+          V8 = Da;
+          Da = D;
+          D = V8;
+          V8 = Ea;
+          Ea = E;
+          E = V8;
+          V8 = Ha;
+          Ha = H;
+          H = V8;
+          V8 = La;
+          La = L;
+          L = V8;
+          break;
+        case 0xDA:                  //** JP C, value **
+          V16 = get16();
+          if (Cf == true) PC = V16;
+          break;
+        case 0xDB:                  //** IN A, PORT **
+          A = portIn(get8());
+          break;
+        case 0xDC:                  //** CALL C, value **
+          V16 = get16();
+          if (Cf == true) {
+            SP--;
+            RAM[SP] = PC / 256;        //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        //*** DD IX Extended instrucions ***
+        case 0xDD:
+          CPU_DD();
+          break;
 
-      default:                    //NOP or anything not recognised
-        Serial.printf("Unknown OP-Code %.2X at %.4X\n\r", OC, PC - 1);
-        break;
-    }
-  } while (cont == true && RUN == true);
-  return (RUN);
+        //********************************************
+        case 0xDE:                    //** SBC A, value ***
+          V8 = get8();
+          A = SUB8(A, V8, Cf);
+          break;
+        case 0xDF:                  //** RST 18 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x18;                 //Put 0x18 in Program Counter
+          break;
+        //********************************************
+        // Instructions E0 to EF fully implemented
+        //********************************************
+        case 0xE0:                  //** RET PO **
+          if (Pf == false) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xE1:                  //** POP HL **
+          L = RAM[SP];
+          SP++;
+          H = RAM[SP];
+          SP++;
+          break;
+        case 0xE2:                  //** JP PO, value **
+          V16 = get16();
+          if (Pf == false) PC = V16;
+          break;
+        case 0xE3:                  //** EX (SP), HL **
+          V8 = RAM[SP];
+          RAM[SP] = L;
+          L = V8;
+          V8 = RAM[SP + 1];
+          RAM[SP + 1] = H;
+          H = V8;
+          break;
+        case 0xE4:                  //** CALL PO, value **
+          V16 = get16();
+          if (Pf == false) {
+            SP--;
+            RAM[SP] = PC / 256;       //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        case 0xE5:                  //** PUSH HL **
+          SP--;
+          RAM[SP] = H;
+          SP--;
+          RAM[SP] = L;
+          break;
+        case 0xE6:                  //** AND VALUE **
+          V8 = get8();
+          A = A & V8;
+          Cf = false;
+          Nf = false;
+          calcP(A);
+          Hf = true;
+          if (A == 0) Zf = true; else Zf = false;;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xE7:                  //** RST 20 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x20;                 //Put 0x20 in Program Counter
+          break;
+        case 0xE8:                  //** RET PE **
+          if (Pf == true) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xE9:                  //** JP (HL) **
+          PC = (H * 256) + L;
+          break;
+        case 0xEA:                  //** JP PE, value **
+          V16 = get16();
+          if (Pf == true) PC = V16;
+          break;
+        case 0xEB:                  //** EX DE, HL **
+          V8 = H;
+          H = D;
+          D = V8;
+          V8 = L;
+          L = E;
+          E = V8;
+          break;
+        case 0xEC:                  //** CALL PE, value **
+          V16 = get16();
+          if (Pf == true) {
+            SP--;
+            RAM[SP] = PC / 256;        //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        //*** ED Extended instrucions ***
+        case 0xED:
+          CPU_ED();
+          break;
+        case 0xEE:                  //** XOR value **
+          V8 = get8();
+          A = A ^ V8;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xEF:                  //** RST 28 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x28;                 //Put 0x28 in Program Counter
+          break;
+        //********************************************
+        // Instructions F0 to FF
+        //********************************************
+        case 0xF0:                  //** RET P **
+          if (Sf == false) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];    //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xF1:                  //** POP AF **
+          Fl = RAM[SP];
+          SP++;
+          A = RAM[SP];
+          SP++;
+          Sf = bitRead(Fl, 7);
+          Zf = bitRead(Fl, 6);
+          Hf = bitRead(Fl, 4);
+          Pf = bitRead(Fl, 2);
+          Nf = bitRead(Fl, 1);
+          Cf = bitRead(Fl, 0);
+          break;
+        case 0xF2:                  //** JP P, value **
+          V16 = get16();
+          if (Sf == false) PC = V16;
+          break;
+        case 0xF3:                  //** DI **
+          intE = false;                //Disable interrupts
+          break;
+        case 0xF4:                  //** CALL P, value **
+          V16 = get16();
+          if (Sf == false) {
+            SP--;
+            RAM[SP] = PC / 256;       //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        case 0xF5:                  //** PUSH AF **
+          bitWrite(Fl, 7 , Sf);
+          bitWrite(Fl, 6 , Zf);
+          bitWrite(Fl, 4 , Hf);
+          bitWrite(Fl, 2 , Pf);
+          bitWrite(Fl, 1 , Nf);
+          bitWrite(Fl, 0 , Cf);
+          SP--;
+          RAM[SP] = A;
+          SP--;
+          RAM[SP] = Fl;
+          break;
+        case 0xF6:                  //*** OR value **
+          V8 = get8();
+          A = A | V8;
+          Cf = false;
+          Nf - false;
+          calcP(A);
+          Hf = false;
+          if (A == 0) Zf = true; else Zf = false;
+          Sf = bitRead(A, 7);
+          break;
+        case 0xF7:                  //** RST 30 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x30;                 //Put 0x30 in Program Counter
+          break;
+        case 0xF8:                  //** RET M **
+          if (Sf == true ) {
+            PC = RAM[SP];
+            SP++;
+            PC += 256 * RAM[SP];      //POP return address off the stack
+            SP++;
+          }
+          break;
+        case 0xF9:                  //** LD SP, HL **
+          SP = (H * 256) + L;
+          break;
+        case 0xFA:                  //** JP M, value **
+          V16 = get16();
+          if (Sf == true) PC = V16;
+          break;
+        case 0xFB:                  //** EI **
+          intE = true;
+          break;
+        case 0xFC:                  //** CALL M, value **
+          V16 = get16();
+          if (Sf == true) {
+            SP--;
+            RAM[SP] = PC / 256;        //Push program counter onto the stack
+            SP--;
+            RAM[SP] = PC & 255;
+            PC = V16;                 //Put call address in Program Counter
+          }
+          break;
+        //*** FD Extended Instructions ***
+        case 0xFD:
+          CPU_FD();
+          break;
+        //********************************************
+        case 0xFE:                  //** CP A, value **
+          V8 = get8();
+          SUB8(A, V8, 0);            //Update flags
+          break;
+        case 0xFF:                  //** RST 38 **
+          SP--;
+          RAM[SP] = PC / 256;        //Push program counter onto the stack
+          SP--;
+          RAM[SP] = PC & 255;
+          PC = 0x38;                 //Put 0x38 in Program Counter
+          break;
+
+        default:                    //NOP or anything not recognised
+          Serial.printf("Unknown OP-Code %.2X at %.4X\n\r", OC, PC - 1);
+          break;
+      }
+      if (SingleStep == true) RUN = false;
+      if (bpOn == true && PC == BP) RUN = false;
+    } else delay(50);
+  }
 }
 
 void CPU_ED(void) {
