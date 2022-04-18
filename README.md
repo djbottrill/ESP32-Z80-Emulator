@@ -1,5 +1,15 @@
 # ESP32-Z80-Emulator
 
+*** Update 18th April 2022 ***
+
+V2. Improvements to CPU Task and single Step / Breakpoints.
+
+Note
+There is a problem with the V2.0.x ESP32 core that in most cases causes the SD card to perform slowly, if at all. It would appear these issues will be fixed in version 2.03 of the core which is due for imminent release.
+
+
+****************************
+
 *** Update 13th July 2021 ***
 
 Improved WiFi connection reliability. 
