@@ -1,5 +1,12 @@
 # ESP32-Z80-Emulator
 
+*** Update 7th June 2022 ***
+
+V2.1 Split the code over several files for readability and a few minor tweaks.
+
+
+****************************
+
 *** Update 18th April 2022 ***
 
 V2. Improvements to CPU Task and single Step / Breakpoints.
