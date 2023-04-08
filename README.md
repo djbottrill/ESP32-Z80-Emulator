@@ -1,5 +1,15 @@
 # ESP32-Z80-Emulator
 
+*** Update 8th April 2023 ***
+
+V2.1 Manyy changes and improvements:
+
+Now supports Over The Air (OTA) updates from the Arduino IDE
+Telnet client is forced into Character mode
+
+
+****************************
+
 *** Update 7th June 2022 ***
 
 V2.1 Split the code over several files for readability and a few minor tweaks.
