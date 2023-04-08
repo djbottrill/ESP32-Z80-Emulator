@@ -1,9 +1,12 @@
 #pragma once
 
-//#include "globals.h"
 #include "disk.h"
 
 void CPUTask( void * parameter );
+void CPU_DD(void);
+void CPU_ED(void);
+void CPU_CB(void);
+void CPU_FD(void);
 uint8_t get8(void);
 uint16_t get16(void);
 void calcP(uint8_t v);
@@ -11,18 +14,15 @@ void portOut(uint8_t p, uint8_t v);
 uint8_t portIn(uint8_t p);
 uint8_t ADD8(uint8_t a, uint8_t b, bool c);
 uint8_t SUB8(uint8_t a, uint8_t b, bool c);
-void CPU_DD(void);
-void CPU_ED(void);
-void CPU_CB(void);
-void CPU_FD(void);
+
 
 
 //*********************************************************************************************
 //****                        Z80 process instruction emulator                             ****
 //*********************************************************************************************
 void CPUTask( void * parameter ) {
-  Serial.print("CPU Task Started RUN = ");
-  Serial.println(RUN, DEC);
+  Serial.printf("CPU Task Started: Z80 is %s\n\r", RUN ? "Running" : "Halted");
+
   while (1) {
 
     if (RUN == true) {
@@ -2030,7 +2030,8 @@ void portOut(uint8_t p, uint8_t v) {
     case UART_PORT:                           //UART Write
       txBuf[txInPtr] = v;                     //Write char to output buffer
       txInPtr++;
-      if (txInPtr == 1024) txInPtr = 0;
+      //if (txInPtr == 1024) txInPtr = 0;
+      if (txInPtr == sizeof(txBuf)) txInPtr = 0;
       bitWrite(pIn[UART_LSR], 6, 1);          //Set bit to indicate sent
       break;
 
@@ -2090,7 +2091,8 @@ uint8_t portIn(uint8_t p) {
       if (rxOutPtr != rxInPtr) {              //Have we received any chars?
         pIn[UART_PORT] = rxBuf[rxOutPtr];     //Put char in UART port
         rxOutPtr++;                          //Inc Output buffer pointer
-        if (rxOutPtr == 1024) rxOutPtr = 0;
+        //if (rxOutPtr == 1024) rxOutPtr = 0;
+        if (rxOutPtr == sizeof(rxBuf)) rxOutPtr = 0;        
         bitWrite(pIn[UART_LSR], 0, 1);       //Set bit to say char can be read
       }
       break;

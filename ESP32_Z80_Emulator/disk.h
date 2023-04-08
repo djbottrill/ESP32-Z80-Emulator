@@ -18,12 +18,12 @@ void bootstrap(void) {
   File boot;
   //Try and boot from SD Card or SPIFFS
   if (sdfound == true) {
-    Serial.println("\n\rBooting from SD Card");
+    Serial.println("Booting from SD Card");
     boot = SD.open("/boot.txt");
     if (boot == 0) Serial.println("boot.txt not found");
   } else {
 
-    Serial.println("\n\rBooting from SPIFFS");
+    Serial.println("Booting from SPIFFS");
     if (!SPIFFS.begin(true)) {
       Serial.println("An Error has occurred while mounting SPIFFS");
       while (1);

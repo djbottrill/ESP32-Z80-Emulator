@@ -190,5 +190,6 @@ char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
-TaskHandle_t Task1, Task2, Task3, Task4;      //Task handles
+TaskHandle_t Task1, Task2, Task3, Task4, Task5;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
+const char *hostName = "z80";   //Hostname
