@@ -5,7 +5,8 @@
 V2.2 Many changes and improvements:
 
 Now supports Over The Air (OTA) updates from the Arduino IDE
-Telnet client is forced into Character mode
+
+Telnet client is forced into Character mode to more closely emulate a serial terminal
 
 
 ****************************
