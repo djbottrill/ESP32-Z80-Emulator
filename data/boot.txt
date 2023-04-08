@@ -1,9 +1,0 @@
-; boot.txt 
-; Data files and load addresses at boot time
-;
-; Simple Z80 monitor program
-;/z80UARTMonitor.rom  0000)
-;
-; Nascom Basic
-/init8250.rom  0000
-/basic.rom  0150
