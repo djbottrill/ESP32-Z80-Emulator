@@ -2,7 +2,7 @@
 
 *** Update 8th April 2023 ***
 
-V2.1 Many changes and improvements:
+V2.2 Many changes and improvements:
 
 Now supports Over The Air (OTA) updates from the Arduino IDE
 Telnet client is forced into Character mode
