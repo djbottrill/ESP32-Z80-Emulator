@@ -4,44 +4,36 @@
 //****                      Serial input and output buffer task                            ****
 //*********************************************************************************************
 void serialTask(void *parameter) {
-  Serial.println("Serial Task Started");
   char c;
-  int cw;
+  Serial.println("Serial I/O Task Started");
+
   for (;;) {
 
     //Check for chars to be sent
-    //if (txOutPtr != txInPtr) {  //Have we received any chars?
-    while(txOutPtr != txInPtr) {  //Have we received any chars?)
-      c = txBuf[txOutPtr];
-      Serial.write(c);  //Send char to console
-      if (serverClient.connected()) {
-        serverClient.write(c);
-        vTaskDelay(1);     
-      }
-      txOutPtr++;  //Inc Output buffer pointer
-      if (txOutPtr == sizeof(txBuf)) txOutPtr = 0;
+    while (txOutPtr != txInPtr) {                   //Have we received any chars?)
+      Serial.write(txBuf[txOutPtr]);                //Send char to console
+      vTaskDelay(1);
+      if (serverClient.connected())  serverClient.write(txBuf[txOutPtr]);   //Send via Telnet if client connected
+      txOutPtr++;                                   //Inc Output buffer pointer
+      if (txOutPtr == sizeof(txBuf)) txOutPtr = 0;  //Wrap around circular buffer
     }
 
-    // Check for Received chars
+    // Check for Received chars from Serial
     while (Serial.available()) {
-      c = Serial.read();
+      rxBuf[rxInPtr] = Serial.read();
+      rxInPtr++;
+      if (rxInPtr == sizeof(rxBuf)) rxInPtr = 0;
+    }
+    
+    // Check for Received chars from Telnet
+    while (serverClient.available()) {
+      c = serverClient.read();
+      if (c == 127) c = 8;                        //Translate backspace
       rxBuf[rxInPtr] = c;
       rxInPtr++;
       if (rxInPtr == sizeof(rxBuf)) rxInPtr = 0;
     }
 
-    if (serverClient.connected() && serverClient.available()) {
-      cw = serverClient.available();
-      while (cw > 0) {
-        c = serverClient.read();
-        rxBuf[rxInPtr] = c;
-        rxInPtr++;
-        if (rxInPtr == sizeof(rxBuf)) rxInPtr = 0;
-        cw--;
-        vTaskDelay(1);        
-      }
-    }
-    
     vTaskDelay(1);
   }
 }
