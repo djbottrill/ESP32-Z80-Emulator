@@ -1,5 +1,12 @@
 # ESP32-Z80-Emulator
 
+*** Update 19th April 2023 ***
+
+Added support for ESP32-S3 Devkit plus a few minor changes
+
+
+****************************
+
 *** Update 8th April 2023 ***
 
 V2.2 Many changes and improvements:
