@@ -4,6 +4,7 @@
 //****                            OLED display task                                        ****
 //*********************************************************************************************
 void OLEDTask(void *parameter) {
+  Serial.println("OLED Task Started");
   display.begin();
   display.fillScreen(BLACK);
   display.setCursor(0, 0);
@@ -17,6 +18,7 @@ void OLEDTask(void *parameter) {
   const int oled1_y = 49;
   const int oled2_y = 59;
   bool dledO;
+
   for (;;) {
 
     if (oled1 != pOut[0]) {

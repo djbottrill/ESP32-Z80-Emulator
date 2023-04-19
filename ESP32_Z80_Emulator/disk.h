@@ -18,10 +18,12 @@ void bootstrap(void) {
   File boot;
   //Try and boot from SD Card or SPIFFS
   if (sdfound == true) {
-    Serial.println("Booting from SD Card");
+    Serial.println("\n\rBooting from SD Card");
     boot = SD.open("/boot.txt");
     if (boot == 0) Serial.println("boot.txt not found");
-  } else {
+  } 
+  #ifdef use_spiffs
+  else {
 
     Serial.println("Booting from SPIFFS");
     if (!SPIFFS.begin(true)) {
@@ -35,6 +37,7 @@ void bootstrap(void) {
       while (1);
     }
   }
+#endif  
 
   //Read boot.txt and load files into RAM
   char linebuf[10][50];
@@ -78,6 +81,7 @@ void bootstrap(void) {
     //Serial.println(AA);
     uint32_t Add = strtoul(AA, NULL, 16);
     FileToRAM(Fs, Add, sdfound);  //sdfound: false means load from SPIFFS
+    vTaskDelay(100);
   }
   boot.close();
 }
@@ -284,9 +288,12 @@ void FileToRAM(char c[], uint16_t l, bool sd) {
   File f;
   if (sd == true) {
     f = SD.open(c, FILE_READ);
-  } else {
+  } 
+  #ifdef use_spiffs
+  else {
     f = SPIFFS.open(c, FILE_READ);
   }
+  #endif
   if (!f) {
     Serial.println("file open failed");
   } else {

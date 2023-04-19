@@ -2,7 +2,7 @@
 #include <FS.h>
 #include <SPI.h>
 #include <SD.h>
-#include <SPIFFS.h>
+
 
 //Needed for OTA
 #include <WiFi.h>
@@ -21,35 +21,84 @@
 #include "oled.h"
 
 
+
 void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);  //Built in LED functions as disk activity indicator
+  pinMode(swA, INPUT_PULLUP);   //BreakPoint switch inputs
+
   Serial.begin(115200);
   while (!Serial);
-  
+
   Serial.println("");
   Serial.println("");
   Serial.println("");
-  Serial.write(27);     //Print "esc"
-  Serial.println("c");  //Send esc c to reset screen
+  Serial.write(27);   //Print "esc"
+  Serial.print("c");  //Send esc c to reset screen
   Serial.println("****        Shady Grove        ****");
   Serial.println("****  Z80 Emulator for ESP32   ****");
-  Serial.println("**** David Bottrill 2022  V2.2 ****");
+  Serial.println("**** David Bottrill 2023  V2.2 ****");
   Serial.println();
 
-  pinMode(LED_BUILTIN, OUTPUT);  //Built in LED functions as disk activity indicator
+  //Create OTA update task
+  xTaskCreatePinnedToCore(
+    OTAtask,
+    "OTAtask",
+    3000,
+    NULL,
+    1,
+    &Task5,
+    0);             //Run on Core 0
+  vTaskDelay(500);  //needed to start-up task
 
-  //BreakPoint switch inputs
-  pinMode(swA, INPUT_PULLUP);
+  while (WiFi.status() != WL_CONNECTED);  //Wait for OTA task to start WiFi
+  vTaskDelay(500);
+  
+#ifdef T2
+  //Start the OLED task
+  xTaskCreatePinnedToCore(
+    OLEDTask,
+    "OLEDTask",
+    3000,
+    NULL,
+    1,
+    &Task4,
+    0);             // Core 0
+  vTaskDelay(500);  // needed to start-up task
+#endif
 
-  //Initialise virtual GPIO ports
-  Serial.println("Initialising Virtual GPIO Port");
-  portOut(GPP, 0);        //Port 0 GPIO A 0 - 7 off
-  portOut(GPP + 1, 255);  //Port 1 GPIO A 0 - 7 Outputs
-  portOut(GPP + 2, 0);    //Port 0 GPIO B 1 & 1 off
-  portOut(GPP + 3, 255);  //Port 1 GPIO B 0 & 1 Outputs
+  //Start the CPU task
+  RUN = false;  //Start the emulator with the Z80 CPU halted
+  xTaskCreatePinnedToCore(
+    CPUTask,
+    "CPUTask",
+    3000,
+    NULL,
+    1,
+    &Task1,
+    1);             // Core 1
+  vTaskDelay(500);  // needed to start-up task
 
-  //Initialise virtual 6850 UART
-  Serial.println("Initialising Virtual 6850 UART");
-  pIn[UART_LSR] = 0x40;  //Set bit to say TX buffer is empty
+  //Start the Serial I/O task
+  xTaskCreatePinnedToCore(
+    serialTask,
+    "SerialTask",
+    3000,
+    NULL,
+    1,
+    &Task2,
+    0);             // Core 0
+  vTaskDelay(500);  // needed to start-up task
+
+  //Start the Telnet task
+  xTaskCreatePinnedToCore(
+    TelnetTask,
+    "TelnetTask",
+    3000,
+    NULL,
+    1,
+    &Task3,
+    0);             //Run on Core 0
+  vTaskDelay(500);  //needed to start-up task
 
   //Depending if swA is pressed run in breakpoint mode or normal mode.
   if (digitalRead(swA) == 0) {
@@ -73,86 +122,6 @@ void setup() {
     Serial.println("Press button A to start");
     buttonA();
   }
-
-
-
-
-  //Start the Serial receive char task
-  xTaskCreatePinnedToCore(
-    serialTask,
-    "SerialTask",
-    3000,
-    NULL,
-    1,
-    &Task2,
-    0);        // Core 0
-  delay(500);  // needed to start-up task
-
-  Serial.println("Initialising Virtual Disk Controller");
-  sdSPI.begin(SCK, MISO, MOSI, SS);
-  if (!SD.begin(SS, sdSPI)) {
-    Serial.println("SD Card Mount Failed");
-    sdfound = false;
-  }
-
-  Serial.println("Connecting to Wifi");
-
-  //Create OTA update task
-  xTaskCreatePinnedToCore(
-    OTAtask,
-    "OTAtask",
-    3000,
-    NULL,
-    1,
-    &Task5,
-    0);        //Run on Core 0
-  delay(500);  //needed to start-up task
-
-  while (WiFi.status() != WL_CONNECTED);  //Wait for OTA task to start WiFi
-  vTaskDelay(500);
-
-
-  //Start the Telnet task
-  xTaskCreatePinnedToCore(
-    TelnetTask,
-    "TelnetTask",
-    3000,
-    NULL,
-    1,
-    &Task3,
-    0);        //Run on Core 0
-  delay(500);  //needed to start-up task
-
-  Serial.print("Ready! Use 'telnet ");
-  Serial.print(WiFi.localIP());
-  Serial.println(" 23' to connect");
-  
-#ifdef T2
-  //Start the OLED task
-  xTaskCreatePinnedToCore(
-    OLEDTask,
-    "OLEDTask",
-    3000,
-    NULL,
-    1,
-    &Task4,
-    0);        // Core 0
-  delay(500);  // needed to start-up task
-#endif
-
-  //Start the CPU task
-  RUN = false;              //Start the emulator with the Z80 CPU halted
-  xTaskCreatePinnedToCore(
-    CPUTask,
-    "CPUTask",
-    3000,
-    NULL,
-    1,
-    &Task1,
-    1);        // Core 1
-  delay(500);  // needed to start-up task
-
-
 }
 
 void loop() {
@@ -269,10 +238,6 @@ unsigned int hexToDec(String hexString) {
 }
 
 
-
-
-
-
 //*********************************************************************************************
 //****                        HEX Dump 256 byte block of RAM                               ****
 //*********************************************************************************************
@@ -308,6 +273,3 @@ void dumpReg(void) {
   Serial.printf("SP: %.4X  Top entry: %.4X\n\r", SP, (RAM[SP] + (256 * RAM[SP + 1])));
   Serial.printf("S:%1d  Z:%1d  H:%1d  P/V:%1d  N:%1d  C:%1d\n\r", Sf, Zf, Hf, Pf, Nf, Cf);
 }
-
-
-

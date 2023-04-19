@@ -4,6 +4,8 @@
 //OTA Task
 void OTAtask(void *parameter) {
 
+    
+ Serial.println("Connecting to Wifi");
   //WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   //WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS);  
@@ -55,9 +57,10 @@ void OTAtask(void *parameter) {
       else if (error == OTA_END_ERROR) Serial.println("End Failed");
     });
 
-  ArduinoOTA.begin();
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
+  ArduinoOTA.begin();
+  Serial.println("OTA update Service Started");
 
   //OTA task loop
   while (1) {

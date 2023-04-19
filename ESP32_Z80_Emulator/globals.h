@@ -1,13 +1,19 @@
 #pragma once
 
-
-
 WiFiServer server(23);
 WiFiClient serverClient;
+const char *hostName = "z80";   //Hostname
 
+#define S3
+//#define use_spiffs
 
-#define T2
+#ifdef use_spiffs
+#include <SPIFFS.h>
+#endif
 
+//*********************************************************************************************
+//****                    Configuration for Lolin 32 Board                                 ****
+//*********************************************************************************************
 #ifdef LOLIN32
 #define SS    5
 #define MOSI  23
@@ -15,46 +21,30 @@ WiFiClient serverClient;
 #define SCK   18
 SPIClass sdSPI(VSPI);
 
-//Virtual GPIO Port A
-#define PA0 32
-#define PA1 33
-#define PA2 25
-#define PA3 26
-#define PA4 27
-#define PA5 14
-#define PA6 12
-#define PA7 13
+//Define pins to use as virtual GPIO ports, -1 means not implemented
+int PortA[8] = { 32, 33, 25, 26, 27, 14, 12, 13};   //Virtual GPIO Port A
+int PortB[8] = { 17, 16, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 
-//Virtual GPIO Port B
-#define PB0 17
-#define PB1 16
 
 //BreakPoint switches
 #define swA 15                  //Breakpoints on / Off
 #endif
+//*********************************************************************************************
 
-
+//*********************************************************************************************
+//****                  Configuration for Lillygo T1 Board                                 ****
+//*********************************************************************************************
 #ifdef T1
-//TTGO-T1
+
 #define SS    13
 #define MOSI  15
 #define MISO  2
 #define SCK   14
 SPIClass sdSPI(HSPI);
 
-//Virtual GPIO Port A
-#define PA0 32
-#define PA1 33
-#define PA2 25
-#define PA3 26
-#define PA4 27
-#define PA5 12
-#define PA6 16
-#define PA7 17
-
-//Virtual GPIO Port B
-#define PB0 18
-#define PB1 19
+//Define pins to use as virtual GPIO ports, -1 means not implemented
+int PortA[8] = { -1, -1, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port A
+int PortB[8] = { -1, -1, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 
 //BreakPoint switches
 #define swA 4                   //Breakpoints on / Off
@@ -62,8 +52,10 @@ SPIClass sdSPI(HSPI);
 #endif
 
 
+//*********************************************************************************************
+//****                  Configuration for Lillygo T2 Board                                 ****
+//*********************************************************************************************
 #ifdef T2
-//TTGO-T2
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1331.h>
@@ -95,26 +87,39 @@ Adafruit_SSD1331 display = Adafruit_SSD1331(cs, dc, mosi, sclk, rst);
 #define SCK   18
 SPIClass sdSPI(VSPI);
 
-//Virtual GPIO Port A
-#define PA0 32
-#define PA1 33
-#define PA2 25
-#define PA3 26
-#define PA4 27
-#define PA5 02
-#define PA6 12
-#define PA7 17
-
-//Virtual GPIO Port B
-#define PB0 21
-#define PB1 22
+//Define pins to use as virtual GPIO ports, -1 means not implemented
+int PortA[8] = { 32, 33, 25, 26, 27,  2, 12, 17};   //Virtual GPIO Port A
+int PortB[8] = { 21, 22, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 
 
 //BreakPoint switches
 #define swA 36                   //Breakpoints on / Off
 #endif
+//*********************************************************************************************
+
+//*********************************************************************************************
+//****                  Configuration for ESP32-S3 Devkit Board                            ****
+//*********************************************************************************************
+#ifdef S3
+
+#define SS    42
+#define MOSI  41
+#define MISO  40
+#define SCK   39
+
+//Define pins to use as virtual GPIO ports, -1 means not implemented
+int PortA[8] = {  1,  2,  3,  4,  5,  6,  7,  8};   //Virtual GPIO Port A
+int PortB[8] = { 35, 36, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 
 
+//BreakPoint switches
+#define swA 37                   //Breakpoints on / Off
+
+#endif
+//*********************************************************************************************
+
+
+//*********************************************************************************************
 //Virtual GPIO Port
 const uint8_t GPP = 0;
 
@@ -175,6 +180,7 @@ uint8_t v2;                     //Temporary storage
 bool cfs;                       //Temp carry flag storage
 bool dled;                      //Disk activity flag
 
+
 uint8_t RAM[65536] = {};        //RAM
 uint8_t pOut[256];              //Output port buffer
 uint8_t pIn[256];               //Input port buffer
@@ -192,4 +198,5 @@ bool sdfound = true;            //SD Card present flag
 
 TaskHandle_t Task1, Task2, Task3, Task4, Task5;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
-const char *hostName = "z80";   //Hostname
+
+
