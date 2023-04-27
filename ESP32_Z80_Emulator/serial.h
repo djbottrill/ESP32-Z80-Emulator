@@ -6,32 +6,43 @@
 void serialTask(void *parameter) {
   char c;
   Serial.println("Serial I/O Task Started");
+  serial_t = true;
 
   for (;;) {
 
     //Check for chars to be sent
-    while (txOutPtr != txInPtr) {                   //Have we received any chars?)
-      Serial.write(txBuf[txOutPtr]);                //Send char to console
-      vTaskDelay(1);
-      if (serverClient.connected())  serverClient.write(txBuf[txOutPtr]);   //Send via Telnet if client connected
-      txOutPtr++;                                   //Inc Output buffer pointer
-      if (txOutPtr == sizeof(txBuf)) txOutPtr = 0;  //Wrap around circular buffer
+    while (txOutPtr != txInPtr) {     //Have we received any chars?)
+      Serial.write(txBuf[txOutPtr]);  //Send char to console
+      if (serverClient.connected()) {
+        serverClient.write(txBuf[txOutPtr]);  //Send via Telnet if client connected
+        vTaskDelay(1);
+      }
+      txOutPtr++;                                                         //Inc Output buffer pointer
+      if (txOutPtr == sizeof(txBuf)) txOutPtr = 0;                        //Wrap around circular buffer
     }
-
+    vTaskDelay(1);
     // Check for Received chars from Serial
     while (Serial.available()) {
       rxBuf[rxInPtr] = Serial.read();
       rxInPtr++;
       if (rxInPtr == sizeof(rxBuf)) rxInPtr = 0;
     }
-    
+
     // Check for Received chars from Telnet
     while (serverClient.available()) {
       c = serverClient.read();
-      if (c == 127) c = 8;                        //Translate backspace
+      if (c == 127) c = 8;  //Translate backspace
       rxBuf[rxInPtr] = c;
       rxInPtr++;
       if (rxInPtr == sizeof(rxBuf)) rxInPtr = 0;
+    }
+
+    // Check if the virtual UART register is empty if so and there is a char waiting then put in UART register
+    if (rxOutPtr != rxInPtr && bitRead(pIn[UART_LSR], 0) == 0) {           //Have we received any chars and the read buffer is empty?
+      pIn[UART_PORT] = rxBuf[rxOutPtr];  //Put char in UART port
+      rxOutPtr++;                        //Inc Output buffer pointer
+      if (rxOutPtr == sizeof(rxBuf)) rxOutPtr = 0;
+      bitWrite(pIn[UART_LSR], 0, 1);  //Set bit to say char can be read
     }
 
     vTaskDelay(1);

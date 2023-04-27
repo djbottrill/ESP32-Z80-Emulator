@@ -2,14 +2,10 @@
 
 WiFiServer server(23);
 WiFiClient serverClient;
-const char *hostName = "z80";   //Hostname
+const char *hostName = "esp80";   //Hostname
 
 #define S3
-//#define use_spiffs
 
-#ifdef use_spiffs
-#include <SPIFFS.h>
-#endif
 
 //*********************************************************************************************
 //****                    Configuration for Lolin 32 Board                                 ****
@@ -106,14 +102,15 @@ int PortB[8] = { 21, 22, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 #define MOSI  41
 #define MISO  40
 #define SCK   39
+SPIClass sdSPI(SPI);
 
 //Define pins to use as virtual GPIO ports, -1 means not implemented
-int PortA[8] = {  1,  2,  3,  4,  5,  6,  7,  8};   //Virtual GPIO Port A
-int PortB[8] = { 35, 36, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
+int PortA[8] = {  4,  5,  6,  7, 15, 16, 17, 18};   //Virtual GPIO Port A
+int PortB[8] = {  8,  3, -1, -1, -1, -1, -1, -1};   //Virtual GPIO Port B
 
 
 //BreakPoint switches
-#define swA 37                   //Breakpoints on / Off
+#define swA 47                   //Breakpoints on / Off
 
 #endif
 //*********************************************************************************************
@@ -196,7 +193,28 @@ char sdfile[50] = {};           //SD card filename
 char sddir[50] = {"/download"}; //SD card path
 bool sdfound = true;            //SD Card present flag
 
-TaskHandle_t Task1, Task2, Task3, Task4, Task5;      //Task handles
+TaskHandle_t Task1, Task2, Task3, Task4, Task5, Task6;      //Task handles
 SemaphoreHandle_t baton;        //Process Baton, currently not used
 
+//Flags to indicate task startup sequences are complete, used to synchronise task startup order
+bool ota_t = false;
+bool cpu_t = false;
+bool serial_t = false;
+bool telnet_t = false;
 
+uint32_t POP[256] ={};
+uint32_t POPcb[256] ={};
+
+String logo[] = {           //Startup / logon banner
+  " EEEEEE   SSSSSS    PPPPPP    888888    000000  ",
+  "E        S      S  P      P  8      8  0     00 ",
+  "E        S         P      P  8      8  0    0 0 ",
+  "EEEEEE    SSSSSS   PPPPPPP    888888   0   0  0 ",
+  "E               S  P         8      8  0  0   0 ",
+  "E               S  P         8      8  0 0    0 ",
+  " EEEEEE   SSSSSS   P          888888    000000  ",
+  "                                                ",
+  "           Z80 Emulator for ESP32 V2.2          ",
+  " David Bottrill - Shady Grove Electronics 2023  ",
+  "                                                "
+  };

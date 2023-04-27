@@ -57,10 +57,11 @@ void OTAtask(void *parameter) {
       else if (error == OTA_END_ERROR) Serial.println("End Failed");
     });
 
-  Serial.print("IP address: ");
+  Serial.print("WiFi Connected - IP address: ");
   Serial.println(WiFi.localIP());
   ArduinoOTA.begin();
   Serial.println("OTA update Service Started");
+  ota_t = true;
 
   //OTA task loop
   while (1) {

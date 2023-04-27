@@ -9,11 +9,11 @@ void CPU_CB(void);
 void CPU_FD(void);
 uint8_t get8(void);
 uint16_t get16(void);
-void calcP(uint8_t v);
-void portOut(uint8_t p, uint8_t v);
-uint8_t portIn(uint8_t p);
-uint8_t ADD8(uint8_t a, uint8_t b, bool c);
-uint8_t SUB8(uint8_t a, uint8_t b, bool c);
+void calcP(uint8_t );
+void portOut(uint8_t, uint8_t);
+uint8_t portIn(uint8_t);
+uint8_t ADD8(uint8_t, uint8_t, bool);
+uint8_t SUB8(uint8_t, uint8_t, bool);
 
 
 
@@ -21,40 +21,42 @@ uint8_t SUB8(uint8_t a, uint8_t b, bool c);
 //****                        Z80 process instruction emulator                             ****
 //*********************************************************************************************
 void CPUTask( void * parameter ) {
-  Serial.printf("CPU Task Started: Z80 is %s\n\r", RUN ? "Running" : "Halted");
 
   //Initialise virtual GPIO ports
-  Serial.println("Initialising Virtual GPIO Ports");
-  portOut(GPP, 0);        //Port 0 GPIO A 0 - 7 off
+  Serial.println("CPU Task Started:\n\rInitialising Virtual PIO Ports");
+  
   portOut(GPP + 1, 255);  //Port 1 GPIO A 0 - 7 Outputs
-  portOut(GPP + 2, 0);    //Port 0 GPIO B 1 & 1 off
+  portOut(GPP, 0);        //Port 0 GPIO A 0 - 7 off
   portOut(GPP + 3, 255);  //Port 1 GPIO B 0 & 1 Outputs
+  portOut(GPP + 2, 0);    //Port 0 GPIO B 1 & 1 off
 
   //Initialise virtual 6850 UART
   Serial.println("Initialising Virtual 6850 UART");
   pIn[UART_LSR] = 0x40;  //Set bit to say TX buffer is empty
 
-  Serial.println("Initialising Virtual Disk Controller");
-#ifdef S3
-  SPI.begin(SCK, MISO, MOSI, SS);
-  if (!SD.begin(SS)) {
-    Serial.println("Card Mount Failed");
-    return;
-  }
-#else
+  Serial.print("Initialising Virtual Disk Controller: ");   
   sdSPI.begin(SCK, MISO, MOSI, SS);
   if (!SD.begin(SS, sdSPI)) {
     Serial.println("SD Card Mount Failed");
     sdfound = false;
   }
-#endif
-
-
+  if(sdfound == true)Serial.println("SD Card Mount Sucessful");
+  Serial.printf("CPU Task Running: Z80 is %s\n\r", RUN ? "Running" : "Halted");
+  cpu_t = true;
 
   while (1) {
-
-    if (RUN == true) {
+    vTaskDelay(50);
+    
+    while (RUN == true) {
       OC = RAM[PC];                 //Get Opcode
+
+      //OpCode popularity counters un-comment if you want to find the top 10 most common Opcodes being executed
+      //this will slow emulation but can help with optimisation of the emulator code 
+      //If data has been collected it will be displayed if you press the breakpoint button to reset the Z80
+
+      //POP[OC]++;                  
+      //if(OC == 0xCB)POPcb[RAM[PC+1]]++;
+
       PC++;                         //Increment Program counter
       switch (OC)  {                //Switch based on OPCode
         //********************************************
@@ -70,10 +72,12 @@ void CPUTask( void * parameter ) {
           RAM[(256 * B) + C] = A;
           break;
         case 0x03:                  //** INC BC **
-          V16 = (256 * B) + C;
-          V16++;
-          B = V16 / 256;
-          C = V16 & 255;
+          //V16 = (256 * B) + C;
+          //V16++;
+          //B = V16 / 256;
+          //C = V16 & 255;
+          C++;
+          if(C == 0)B++;
           break;
         case 0x04:                  //** INC B **
           cfs = Cf;
@@ -178,10 +182,12 @@ void CPUTask( void * parameter ) {
           RAM[(256 * D) + E] = A;
           break;
         case 0x13:                  //** INC DE **
-          V16 = E + (256 * D);
-          V16++;
-          D = V16 / 256;
-          E = V16 & 255;
+          //V16 = E + (256 * D);
+          //V16++;
+          //D = V16 / 256;
+          //E = V16 & 255;
+          E++;
+          if(E == 0)D++;
           break;
         case 0x14:                  //** INC D **
           cfs = Cf;
@@ -277,10 +283,12 @@ void CPUTask( void * parameter ) {
           RAM[V16 + 1] = H;
           break;
         case 0x23:                  //** INC HL **
-          V16 = L + (256 * H);
-          V16++;
-          H = V16 / 256;
-          L = V16 & 255;
+          //V16 = L + (256 * H);
+          //V16++;
+          //H = V16 / 256;
+          //L = V16 & 255;
+          L++;
+          if(L == 0)H++;
           break;
         case 0x24:                  //** INC H **
           cfs = Cf;
@@ -1145,7 +1153,8 @@ void CPUTask( void * parameter ) {
           if (Cf == false) PC = V16;
           break;
         case 0xD3:                  //** OUT PORT, A **
-          portOut(get8(), A);
+          portOut(RAM[PC], A);
+          PC++;
           break;
         case 0xD4:                  //** CALL NC, value **
           V16 = get16();
@@ -1207,7 +1216,9 @@ void CPUTask( void * parameter ) {
           if (Cf == true) PC = V16;
           break;
         case 0xDB:                  //** IN A, PORT **
-          A = portIn(get8());
+          //A = portIn(get8());
+          A = portIn(RAM[PC]);
+          PC++;
           break;
         case 0xDC:                  //** CALL C, value **
           V16 = get16();
@@ -1472,7 +1483,8 @@ void CPUTask( void * parameter ) {
       }
       if (SingleStep == true) RUN = false;
       if (bpOn == true && PC == BP) RUN = false;
-    } else delay(50);
+    }
+    
   }
 }
 
@@ -1831,7 +1843,8 @@ void CPU_CB(void) {
       Hf = true;
       break;
     case 0x47:    //** BIT 0, A **
-      Zf = !bitRead(A, 0);
+      //Zf = !bitRead(A, 0);
+      Zf = !(A & 1);
       Nf = false;
       Hf = true;
       break;
@@ -1997,10 +2010,8 @@ uint8_t get8(void) {
 //****                            Get next 16 bit operand                                  ****
 //*********************************************************************************************
 uint16_t get16(void) {
-  uint16_t V = RAM[PC];
-  PC++;
-  V += (256 * RAM[PC]);
-  PC++;
+  uint16_t V = RAM[PC] + 256*RAM[PC+1];
+  PC=PC+2;
   return (V);
 }
 
@@ -2008,12 +2019,18 @@ uint16_t get16(void) {
 //****                        Calculate parity and set flag                                ****
 //*********************************************************************************************
 void calcP(uint8_t v) {                 //Calc Parity and set flag
-  uint8_t i;
-  uint8_t z = 0;
-  for (i = 0; i < 8; i++) {
-    if (bitRead(v, i) == 1) z++;
+  //uint8_t i;
+  //uint8_t z = 0;
+  //for (i = 0; i < 8; i++) {
+  //  if (bitRead(v, i) == 1) z++;
+  //}
+  //Pf = !bitRead(z, 0);
+  Pf = true;
+  while (v){
+    Pf = !Pf;
+    v = v & (v - 1);
   }
-  Pf = !bitRead(z, 0);
+
 }
 
 
@@ -2093,15 +2110,14 @@ void portOut(uint8_t p, uint8_t v) {
 //****                             Z80 input port handler                                  ****
 //*********************************************************************************************
 uint8_t portIn(uint8_t p) {
-  int i;
   switch (p) {
     case GPP:        //Read GPIO port if Direction be is 0 (Input)     
-      for(i = 0; i <8; i++){
+      for(int i = 0; i <8; i++){
         if (PortA[i] > -1 && bitRead(pOut[GPP + 1], 0) == 0) bitWrite(pIn[GPP], 0, digitalRead(PortA[i]));        
       }
       break;
     case GPP+2:      //Read GPIO port if Direction be is 0 (Input)
-      for(i = 0; i <8; i++){
+      for(int i = 0; i <8; i++){
         if (PortB[i] > -1 && bitRead(pOut[GPP + 2], 0) == 0) bitWrite(pIn[GPP], 0, digitalRead(PortB[i]));        
       }
       break;
@@ -2111,15 +2127,12 @@ uint8_t portIn(uint8_t p) {
       break;
 
     case UART_LSR:    //Check for received char
-      if (rxOutPtr != rxInPtr) {              //Have we received any chars?
-        pIn[UART_PORT] = rxBuf[rxOutPtr];     //Put char in UART port
-        rxOutPtr++;                          //Inc Output buffer pointer
-        if (rxOutPtr == sizeof(rxBuf)) rxOutPtr = 0;        
-        bitWrite(pIn[UART_LSR], 0, 1);       //Set bit to say char can be read
-      }
+      //Nothing to do here as this is handled by the serial task
       break;
+      
     case DCMD:
       break;
+
     default:
       Serial.printf("Port In: %.2X  Val: %.2X PC: %.4X\n\r", p, pIn[p], PC);
       break;

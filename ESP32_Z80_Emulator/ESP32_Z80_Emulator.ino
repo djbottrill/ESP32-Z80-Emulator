@@ -13,6 +13,8 @@
 
 //Include local header files
 #include "globals.h"
+#include "init8250.h"
+#include "basic.h"
 #include "cpu.h"
 #include "disk.h"
 #include "ota.h"
@@ -21,23 +23,24 @@
 #include "oled.h"
 
 
-
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);  //Built in LED functions as disk activity indicator
-  pinMode(swA, INPUT_PULLUP);   //BreakPoint switch inputs
+  pinMode(swA, INPUT_PULLUP);    //BreakPoint switch inputs
 
   Serial.begin(115200);
-  while (!Serial);
+  while (!Serial)
+    ;
 
   Serial.println("");
   Serial.println("");
   Serial.println("");
   Serial.write(27);   //Print "esc"
   Serial.print("c");  //Send esc c to reset screen
-  Serial.println("****        Shady Grove        ****");
-  Serial.println("****  Z80 Emulator for ESP32   ****");
-  Serial.println("**** David Bottrill 2023  V2.2 ****");
-  Serial.println();
+
+//Print the logon logo
+  for(int i = 0; i <11; i++){
+    Serial.println(logo[i]);
+  };
 
   //Create OTA update task
   xTaskCreatePinnedToCore(
@@ -45,14 +48,14 @@ void setup() {
     "OTAtask",
     3000,
     NULL,
-    1,
+    1,      //Priority 1 (lowest)
     &Task5,
-    0);             //Run on Core 0
-  vTaskDelay(500);  //needed to start-up task
+    0);     
 
-  while (WiFi.status() != WL_CONNECTED);  //Wait for OTA task to start WiFi
-  vTaskDelay(500);
-  
+  while (ota_t == false) {  //wait for OTA service to start
+    vTaskDelay(10);
+  }
+
 #ifdef T2
   //Start the OLED task
   xTaskCreatePinnedToCore(
@@ -60,10 +63,10 @@ void setup() {
     "OLEDTask",
     3000,
     NULL,
-    1,
+    1,              //Priority 1 (lowest)
     &Task4,
-    0);             // Core 0
-  vTaskDelay(500);  // needed to start-up task
+    0);             //Run on Core 0
+  vTaskDelay(500);  //needed to start-up task
 #endif
 
   //Start the CPU task
@@ -73,21 +76,14 @@ void setup() {
     "CPUTask",
     3000,
     NULL,
-    1,
+    4,          //Very high priority but it shouldn't make a difference as this is the only task on Core 1
     &Task1,
-    1);             // Core 1
-  vTaskDelay(500);  // needed to start-up task
+    1);         //Run on Core 1
 
-  //Start the Serial I/O task
-  xTaskCreatePinnedToCore(
-    serialTask,
-    "SerialTask",
-    3000,
-    NULL,
-    1,
-    &Task2,
-    0);             // Core 0
-  vTaskDelay(500);  // needed to start-up task
+  while (cpu_t == false) {  //wait for CPU task to start
+    vTaskDelay(10);
+  }
+
 
   //Start the Telnet task
   xTaskCreatePinnedToCore(
@@ -95,10 +91,28 @@ void setup() {
     "TelnetTask",
     3000,
     NULL,
-    1,
-    &Task3,
-    0);             //Run on Core 0
-  vTaskDelay(500);  //needed to start-up task
+    3,      //Priority 3 (highest)
+    &Task3, 
+    0);     //Run on Core 0
+
+  while (telnet_t == false) {  //wait for Telnet task to start
+    vTaskDelay(10);
+  }
+
+  //Start the Serial I/O task
+  xTaskCreatePinnedToCore(
+    serialTask,
+    "SerialTask",
+    3000,
+    NULL,
+    2,      //Priority 2 (medium)
+    &Task2,
+    0);     //Run on Core 0
+
+  while (serial_t == false) {  //wait for Serial task to start
+    vTaskDelay(10);
+  }
+
 
   //Depending if swA is pressed run in breakpoint mode or normal mode.
   if (digitalRead(swA) == 0) {
@@ -123,9 +137,9 @@ void setup() {
     buttonA();
   }
 }
-
 void loop() {
-  bootstrap();  //Load boot images from SD Card or SPIFFS
+
+  bootstrap();  //Load boot images from SD Card or Flash
   PC = 0;       //Set program counter
   switch (BPmode) {
     case 0:
@@ -134,14 +148,10 @@ void loop() {
       SingleStep = false;
       bpOn = false;
       RUN = true;
-      while (RUN == true) {
-        if (digitalRead(swA) == 0) {  //Pressing button A will force a restart
-          RUN = false;
-          while (digitalRead(swA) == 0) delay(50);
-        }
-        delay(50);
-      }
+      while (RUN == true && digitalRead(swA) == 1) vTaskDelay(100);  //Loop until CPU halts or Breakpoint button is pressed
+      RUN = false;
       Serial.printf("\n\rCPU Halted @ %.4X ...rebooting...\n\r", PC - 1);
+      while (digitalRead(swA) == 0) vTaskDelay(50);  //Wait for button to be released
       PC = 0;
       break;
     case 1:
@@ -151,7 +161,7 @@ void loop() {
         dumpReg();
         buttonA();
         RUN = true;  //Start CPU
-        delay(50);
+        vTaskDelay(50);
         while (RUN == true) delay(50);  //Wait for CPU to stop
       }
       break;
@@ -160,7 +170,7 @@ void loop() {
       bpOn = true;  //Run until BP
       SingleStep = false;
       RUN = true;
-      delay(50);
+      vTaskDelay(50);
       while (RUN == true) delay(50);  //Wait for CPU to stop
       bpOn = false;
       SingleStep = true;
@@ -169,7 +179,7 @@ void loop() {
         buttonA();
         RUN = true;  //Start CPU
         delay(50);
-        while (RUN == true) delay(50);  //Wait for CPU to stop
+        while (RUN == true) vTaskDelay(50);  //Wait for CPU to stop
       }
       break;
     case 3:
@@ -179,7 +189,7 @@ void loop() {
       while (1) {
         RUN = true;
         delay(50);
-        while (RUN == true) delay(50);  //Wait for CPU to stop
+        while (RUN == true) vTaskDelay(50);  //Wait for CPU to stop
         dumpReg();
 
         buttonA();
@@ -187,8 +197,13 @@ void loop() {
       }
       break;
   }
+  popularity();  //If enabled dump the Opcode Popularity stats
 }
 
+
+//*********************************************************************************************
+//****            Wait for breakpoint button to be pressed and released                    ****
+//*********************************************************************************************
 void buttonA(void) {
   while (digitalRead(swA) == 1) delay(5);
   while (digitalRead(swA) == 0) delay(5);
@@ -249,6 +264,64 @@ void dumpRAM(uint16_t s) {
       Serial.printf("%.2X ", RAM[s + ii + i * 16]);
     }
     Serial.println();
+  }
+}
+
+//*********************************************************************************************
+//****                   DUMP OPCODE Popularity Contest results                            ****
+//*********************************************************************************************
+void popularity(void) {
+  bool contest = false;
+  for (int i = 0; i < 256; i++) {
+    if (POP[i] > 0) {
+      contest = true;  //The Op Code table isn't empty so display popularity top 10s
+      i = 256;
+    }
+  }
+  if (contest) {  //Only show results if we've collected any data
+    Serial.println("\n\rTop 10 OPCodes");
+    bubbleSort(POP, 256);
+    if (POP[0xcb] > 0) {  //CB extended Op Codes detected so display the top 10
+      Serial.println("\n\rTop 10 'CB' OPCodes");
+      bubbleSort(POPcb, 256);
+      Serial.println();
+    }
+
+    for (int i = 0; i < 256; i++) {  //Clear the tables for the next run
+      POP[i] = 0;
+      POPcb[i] = 0;
+    }
+  }
+}
+
+//*********************************************************************************************
+//****                          Bubble Sort and print top 10                               ****
+//*********************************************************************************************
+void bubbleSort(uint32_t a[], int size) {
+  int idx[size];
+  int i, o, ti;
+  uint32_t t;
+
+  for (i = 0; i < size; i++) {  //Set the Opocde index array
+    idx[i] = i;
+  }
+
+  //Perform the bubble sort
+  for (i = 0; i < (size - 1); i++) {
+    for (o = 0; o < (size - (i + 1)); o++) {
+      if (a[o] > a[o + 1]) {
+        t = a[o];
+        ti = idx[o];
+        a[o] = a[o + 1];
+        idx[o] = idx[o + 1];
+        a[o + 1] = t;
+        idx[o + 1] = ti;
+      }
+    }
+  }
+  //Print the top 10 results in Decending order
+  for (i = 1; i < 11; i++) {
+    if (a[size - i] > 0) Serial.printf("%02X  %d\n\r", idx[size - i], a[size - i]);
   }
 }
 
