@@ -1,11 +1,24 @@
 #pragma once
+const String banner[] = {           //Startup / logon banner
+  " EEEEEE   SSSSSS    PPPPPP    888888    000000  ",
+  "E        S      S  P      P  8      8  0     00 ",
+  "E        S         P      P  8      8  0    0 0 ",
+  "EEEEEE    SSSSSS   PPPPPPP    888888   0   0  0 ",
+  "E               S  P         8      8  0  0   0 ",
+  "E               S  P         8      8  0 0    0 ",
+  " EEEEEE   SSSSSS   P          888888    000000  ",
+  "                                                ",
+  "           Z80 Emulator for ESP32 V2.2          ",
+  " David Bottrill - Shady Grove Electronics 2023  ",
+  "                                                "
+  };
 
 WiFiServer server(23);
 WiFiClient serverClient;
 const char *hostName = "esp80";   //Hostname
 
-#define S3
 
+#define S3
 
 //*********************************************************************************************
 //****                    Configuration for Lolin 32 Board                                 ****
@@ -205,16 +218,4 @@ bool telnet_t = false;
 uint32_t POP[256] ={};
 uint32_t POPcb[256] ={};
 
-String logo[] = {           //Startup / logon banner
-  " EEEEEE   SSSSSS    PPPPPP    888888    000000  ",
-  "E        S      S  P      P  8      8  0     00 ",
-  "E        S         P      P  8      8  0    0 0 ",
-  "EEEEEE    SSSSSS   PPPPPPP    888888   0   0  0 ",
-  "E               S  P         8      8  0  0   0 ",
-  "E               S  P         8      8  0 0    0 ",
-  " EEEEEE   SSSSSS   P          888888    000000  ",
-  "                                                ",
-  "           Z80 Emulator for ESP32 V2.2          ",
-  " David Bottrill - Shady Grove Electronics 2023  ",
-  "                                                "
-  };
+

@@ -32,7 +32,7 @@ void CPUTask( void * parameter ) {
 
   //Initialise virtual 6850 UART
   Serial.println("Initialising Virtual 6850 UART");
-  pIn[UART_LSR] = 0x40;  //Set bit to say TX buffer is empty
+  pIn[UART_LSR] = 0x40;   //Set bit to say TX buffer is empty
 
   Serial.print("Initialising Virtual Disk Controller: ");   
   sdSPI.begin(SCK, MISO, MOSI, SS);
@@ -2082,12 +2082,12 @@ void portOut(uint8_t p, uint8_t v) {
       pIn[p] = v;
       if (sdfound == true) {
         switch (v) {
-          case 1: diskRead(SD);         pIn[DCMD] = 0; break;
-          case 2: diskWrite(SD);        pIn[DCMD] = 0; break;
-          case 4: SDfileOpen(SD);       pIn[DCMD] = 0; break;
-          case 5: SDfileRead(SD);       pIn[DCMD] = 0; break;
-          case 6: SDprintDir(SD);       pIn[DCMD] = 0; break;
-          case 7: SDsetPath(SD);        pIn[DCMD] = 0; break;
+          case 1: diskRead();         pIn[DCMD] = 0; break;
+          case 2: diskWrite();        pIn[DCMD] = 0; break;
+          case 4: SDfileOpen();       pIn[DCMD] = 0; break;
+          case 5: SDfileRead();       pIn[DCMD] = 0; break;
+          case 6: SDprintDir();       pIn[DCMD] = 0; break;
+          case 7: SDsetPath();        pIn[DCMD] = 0; break;
           case 8: bootstrap();  PC = 0; pIn[DCMD] = 0; break;   //Force reload of boot images and reboot
           default: Serial.printf("Unknown Disk Command: 0x%.2X\n\r", v); break;
         }

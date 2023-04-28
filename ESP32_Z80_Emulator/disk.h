@@ -1,17 +1,17 @@
+#include "serial.h"
+#include <stdio.h>
 #pragma once
 #include "globals.h"
 
 void loadBasic(void);
 void bootstrap(void);
-bool diskRead(fs::FS& fs);
-bool diskWrite(fs::FS& fs);
-void SDfileOpen(fs::FS& fs);
-bool SDfileRead(fs::FS& fs);
-void SDprintDir(fs::FS& fs);
-bool SDsetPath(fs::FS& fs);
+bool diskRead(void);
+bool diskWrite(void);
+void SDfileOpen(void);
+bool SDfileRead(void);
+void SDprintDir(void);
+bool SDsetPath(void);
 void FileToRAM(char[], uint16_t);
-
-
 
 //*********************************************************************************************
 //****                       Load bootstrap binaries from flash                            ****
@@ -105,11 +105,16 @@ void bootstrap(void) {
 //*********************************************************************************************
 //****                             Print SD card directory                                 ****
 //*********************************************************************************************
-void SDprintDir(fs::FS& fs) {  // Show files in /download
-  File dir = fs.open(sddir, FILE_READ);
+void SDprintDir(void) {  // Show files in /download
+
+  char buf[80];
+
+  File dir = SD.open(sddir, FILE_READ);
   dir.rewindDirectory();
   int cols = 0;
-  Serial.println(sddir);
+  sprintf(buf, "%s\n\r",sddir);
+  outString(buf);
+
   while (true) {
     File entry = dir.openNextFile();
     if (!entry) {
@@ -117,34 +122,48 @@ void SDprintDir(fs::FS& fs) {  // Show files in /download
       break;
     }
     String st = entry.name();
-    if (st.charAt(0) != '_') {  // Skip deleted files
-      Serial.print(st);
-      if (st.length() < 8) Serial.print("\t");  // Extra tab if the filename is short
+    if (st.charAt(0) != '_' && st.charAt(0) != '.') {  // Skip deleted / hidden files
+      sprintf(buf, "%s", st);
+      outString(buf);
+      if (st.length() < 8){
+        sprintf(buf, "\t");
+        outString(buf); 
+      } 
       if (entry.isDirectory()) {
-        Serial.print("\t   DIR");
+        sprintf(buf, "\t   DIR");
+        outString(buf);
       } else {
         // files have sizes, directories do not
-        Serial.print("\t");
-        //Serial.print(entry.size(), DEC);
-        Serial.printf("%6d", entry.size());
+        sprintf(buf, "\t");
+        outString(buf);
+        sprintf(buf, "%6d", entry.size());
+        outString(buf);
       }
       cols++;
       if (cols < 3) {
-        Serial.print("\t");
+        sprintf(buf, "\t");
+        outString(buf);
+
       } else {
-        Serial.println();
+        sprintf(buf, "\n\r");
+        outString(buf);
         cols = 0;
       }
     }
     entry.close();
   }
   dir.close();
+
+  
 }
 
 //*********************************************************************************************
 //****                                 Set SD card path                                    ****
 //*********************************************************************************************
-bool SDsetPath(fs::FS& fs) {                   // Set SD Card path for file download
+bool SDsetPath(void) {                   // Set SD Card path for file download
+  
+  char buf[80];
+
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];  // Get buffer address as this contains the path
   int l = RAM[a];                              // The first byte in the buffer contains the byte count
   int i;
@@ -154,25 +173,28 @@ bool SDsetPath(fs::FS& fs) {                   // Set SD Card path for file down
     d[j] = RAM[a + i];      // Read directory path
     if (d[j] != 0x20) j++;  // Skip amy leading spaces
   }
-  Serial.print("New Path: ");
-  Serial.println(d);
-  //File dir = SD.open(d);                          // Check if path is valid
-  File dir = fs.open(d, FILE_READ);  // Check if path is valid
+
+  sprintf(buf, "New Path: %s\n\r",d);
+  outString(buf); 
+
+  File dir = SD.open(d, FILE_READ);  // Check if path is valid
   if (!dir) {
-    Serial.println("Invalid path");
+    sprintf(buf, "Invalid path\n\r");
+    outString(buf);
+
     return (false);
   }
   dir.close();
   for (i = 0; i < 50; i++) sddir[i] = d[i];  // Copy path to global variable
-  Serial.print("Setting SD Card path to: ");
-  Serial.println(sddir);
+  sprintf(buf, "Setting SD Card path to: %s\n\r", sddir);
+  outString(buf);
   return (true);
 }
 
 //*********************************************************************************************
 //****                              Open file on SD card                                   ****
 //*********************************************************************************************
-void SDfileOpen(fs::FS& fs) {
+void SDfileOpen(void) {
   uint16_t sdbuffer;
   sdbuffer = pOut[DPARM + 1] << 8 | pOut[DPARM];  // Get buffer address
   int n;
@@ -187,8 +209,8 @@ void SDfileOpen(fs::FS& fs) {
   for (n = 0; n < 12; n++) sdfile[n + nn] = pOut[DPARM + n + 2];  // Append filename
   unsigned int blocks = 0;
   Serial.printf("open: %s ", sdfile);
-  //File f = SD.open(sdfile, FILE_READ);
-  File f = fs.open(sdfile, FILE_READ);
+  File f = SD.open(sdfile, FILE_READ);
+  //File f = fs.open(sdfile, FILE_READ);
   if (!f) {
     Serial.println("file open failed");
   } else {
@@ -206,14 +228,19 @@ void SDfileOpen(fs::FS& fs) {
 //*********************************************************************************************
 //****           Read SD card file to Z80 memory for sdcopy.com                            ****
 //*********************************************************************************************
-bool SDfileRead(fs::FS& fs) {                      // Read block from file command
+bool SDfileRead(void) {                      // Read block from file command
+  
+  char buf[80];
+
   int s = pOut[DPARM + 3] << 8 | pOut[DPARM + 2];  // Block Number
   int a = pOut[DPARM + 1] << 8 | pOut[DPARM];      // Get buffer address
   digitalWrite(LED_BUILTIN, HIGH);
   dled = true;
-  File f = fs.open(sdfile, FILE_READ);
+  File f = SD.open(sdfile, FILE_READ);
   if (!f) {
-    Serial.println("file open failed");
+    sprintf(buf, "file open failed\n\r");
+    outString(buf);
+
     return (false);
   }
   unsigned long fz = f.size();  // Get file size
@@ -235,7 +262,7 @@ bool SDfileRead(fs::FS& fs) {                      // Read block from file comma
 //*********************************************************************************************
 //****                       Z80 Virtual disk write function                               ****
 //*********************************************************************************************
-bool diskWrite(fs::FS& fs) {
+bool diskWrite(void) {
   digitalWrite(LED_BUILTIN, HIGH);
   dled = true;
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
@@ -244,7 +271,8 @@ bool diskWrite(fs::FS& fs) {
   s = s & 0x3fff;
   char dd[] = "/disks/A.dsk";
   dd[7] = vdrive + 65;
-  File f = fs.open(dd, "r+w+");
+  //File f = fs.open(dd, "r+w+");
+  File f = SD.open(dd, "r+w+");
   if (!f) {
     Serial.println("Virtual Disk file open failed");
     return (false);
@@ -263,7 +291,7 @@ bool diskWrite(fs::FS& fs) {
 //*********************************************************************************************
 //****                       Z80 Virtual disk read function                               ****
 //*********************************************************************************************
-bool diskRead(fs::FS& fs) {
+bool diskRead(void) {
   digitalWrite(LED_BUILTIN, HIGH);
   dled = true;
   uint32_t s = pOut[DPARM + 4] << 16 | pOut[DPARM + 3] << 8 | pOut[DPARM + 2];
@@ -273,8 +301,8 @@ bool diskRead(fs::FS& fs) {
   s = s & 0x3fff;
   char dd[] = "/disks/A.dsk";
   dd[7] = vdrive + 65;
-  //File f = SD.open(dd, FILE_READ);
-  File f = fs.open(dd, FILE_READ);
+  File f = SD.open(dd, FILE_READ);
+  //File f = fs.open(dd, FILE_READ);
   if (!f) {
     Serial.println("Virtual Disk file open failed");
     return (false);

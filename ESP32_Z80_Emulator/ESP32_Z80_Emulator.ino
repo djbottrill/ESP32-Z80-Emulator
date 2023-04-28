@@ -39,7 +39,7 @@ void setup() {
 
 //Print the logon logo
   for(int i = 0; i <11; i++){
-    Serial.println(logo[i]);
+    Serial.println(banner[i]);
   };
 
   //Create OTA update task
