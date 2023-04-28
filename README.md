@@ -1,5 +1,13 @@
 # ESP32-Z80-Emulator
 
+
+Update 28/04/23
+
+CPM SD commands: sdfiles, sdpath and sdcopy now send serial output to telnet session.
+Other minor tweaks.
+
+*************************
+
 *** Update 19th April 2023 ***
 
 Added support for ESP32-S3 Devkit plus a few minor changes
